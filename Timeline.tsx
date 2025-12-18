@@ -1,14 +1,13 @@
-
 import React from 'react';
 import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat } from 'lucide-react';
-import { TimelineItem, TrackType } from './types';
+import { TimelineItem, TrackType } from './types.ts';
 import { 
   LANE_HEIGHT_TEXT, 
   LANE_HEIGHT_VIDEO, 
   LANE_HEIGHT_AUDIO, 
   RULER_HEIGHT 
-} from './constants';
-import { TimelineClip } from './TimelineClip';
+} from './constants.ts';
+import { TimelineClip } from './TimelineClip.tsx';
 
 interface TimelineProps {
   items: TimelineItem[];
@@ -34,7 +33,7 @@ interface TimelineProps {
   renderRuler: React.ReactNode[];
   playheadRef: React.RefObject<HTMLDivElement>;
   timelineRef: React.RefObject<HTMLDivElement>;
-  onDropFromLibrary: (asset: { name: string, url: string, duration: number }, startTime: number) => void;
+  onDropFromLibrary: (asset: { name: string, url: string, duration: number, type: TrackType }, startTime: number) => void;
   onDropExternalFiles: (files: FileList, startTime: number) => void;
   draggingAsset: {name: string, url: string, duration: number} | null;
   dragOverTime: number | null;
@@ -57,13 +56,11 @@ export const Timeline = ({
     const x = e.clientX - rect.left + timelineRef.current.scrollLeft;
     const startTime = Math.max(0, x / pxPerSec);
 
-    // 1. Check for native OS files
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       onDropExternalFiles(e.dataTransfer.files, startTime);
       return;
     }
 
-    // 2. Check for internal library assets
     const data = e.dataTransfer.getData('application/json');
     if (!data) return;
 

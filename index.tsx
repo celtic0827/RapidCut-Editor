@@ -1,21 +1,20 @@
-
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { TimelineItem, ProjectSettings, FXPreset, ClipFX, TrackType } from './types';
+import { TimelineItem, ProjectSettings, FXPreset, ClipFX, TrackType } from './types.ts';
 import { 
   MAX_VIDEO_DURATION, 
   TIMELINE_BUFFER_SECONDS, 
   MIN_TIMELINE_DURATION 
-} from './constants';
-import { ProjectSettingsModal } from './ProjectSettingsModal';
-import { RenderModal } from './RenderModal';
-import { Header } from './Header';
-import { MediaBin } from './MediaBin';
-import { StylePalette } from './StylePalette';
-import { PreviewPlayer } from './PreviewPlayer';
-import { Inspector } from './Inspector';
-import { Timeline } from './Timeline';
+} from './constants.ts';
+import { ProjectSettingsModal } from './ProjectSettingsModal.tsx';
+import { RenderModal } from './RenderModal.tsx';
+import { Header } from './Header.tsx';
+import { MediaBin } from './MediaBin.tsx';
+import { StylePalette } from './StylePalette.tsx';
+import { PreviewPlayer } from './PreviewPlayer.tsx';
+import { Inspector } from './Inspector.tsx';
+import { Timeline } from './Timeline.tsx';
 
 type DragType = 'move' | 'trim-start' | 'trim-end';
 
@@ -61,7 +60,7 @@ function RapidCutEditor() {
   const timeDisplayRef = useRef<HTMLSpanElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
-  const requestRef = useRef<number>(null);
+  const requestRef = useRef<number>(0);
   const internalTimeRef = useRef(0);
   const lastUpdateRef = useRef(0);
   const currentClipIdRef = useRef<string | null>(null);
@@ -79,7 +78,7 @@ function RapidCutEditor() {
 
   const activeClip = useMemo(() => 
     items.find(i => i.type === 'video' && internalTimeRef.current >= i.startTime && internalTimeRef.current < i.startTime + i.duration),
-  [items, internalTimeRef.current]);
+  [items]);
 
   const syncMedia = useCallback((t: number, forceSeek = false) => {
     const v = videoRef.current;
@@ -127,7 +126,6 @@ function RapidCutEditor() {
 
   const onSplit = useCallback(() => {
     const t = internalTimeRef.current;
-    // 找出目前播放頭下方所有的媒體片段（不只是選中的）
     const itemsToSplit = items.filter(i => t > i.startTime && t < i.startTime + i.duration);
     if (itemsToSplit.length === 0) return;
 
@@ -164,7 +162,6 @@ function RapidCutEditor() {
       const filtered = prev.filter(i => i.id !== id);
       if (!ripple) return filtered;
 
-      // 漣漪刪除：針對被刪除片段之後的所有片段進行位移
       const shiftAmount = itemToDelete.duration;
       return filtered.map(i => {
         if (i.startTime > itemToDelete.startTime && (i.type === 'video' || i.type === 'audio')) {
@@ -180,7 +177,6 @@ function RapidCutEditor() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isInput = (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
-      
       if (isInput) return;
 
       if (e.code === 'Space') {
@@ -192,7 +188,7 @@ function RapidCutEditor() {
       } else if (e.code === 'Backspace' || e.code === 'Delete') {
         if (selectedItemId) {
           e.preventDefault();
-          onDeleteItem(selectedItemId, true); // 預設使用漣漪刪除達成極速剪輯
+          onDeleteItem(selectedItemId, true);
         }
       }
     };
@@ -271,7 +267,7 @@ function RapidCutEditor() {
     setItems(p => [...p, ...newItems]);
     if (newItems.length > 0) setSelectedItemId(newItems[0].id);
     setDragOverTime(null);
-  }, []);
+  }, [handleImport]);
 
   const handleScrub = useCallback((clientX: number) => {
     if (timelineRef.current) {
@@ -340,21 +336,17 @@ function RapidCutEditor() {
           return prev.map(item => {
             if (item.id === info.id) {
               const originalDuration = item.originalDuration ?? Infinity;
-
               if (info.type === 'move') {
                 let newStart = info.initialStartTime + deltaTime;
                 const snappedStart = getSnappedTime(newStart);
                 const snappedEnd = getSnappedTime(newStart + item.duration);
-                
                 if (Math.abs(snappedStart - newStart) <= Math.abs(snappedEnd - (newStart + item.duration))) {
                   if (Math.abs(snappedStart - newStart) < snapThresholdSec) newStart = snappedStart;
                 } else {
                   if (Math.abs(snappedEnd - (newStart + item.duration)) < snapThresholdSec) newStart = snappedEnd - item.duration;
                 }
-                
                 return { ...item, startTime: Math.max(0, newStart) };
               }
-              
               if (info.type === 'trim-end') {
                 const rawEnd = info.initialStartTime + info.initialDuration + deltaTime;
                 let finalEnd = getSnappedTime(rawEnd);
@@ -364,7 +356,6 @@ function RapidCutEditor() {
                 }
                 return { ...item, duration: Math.max(0.1, finalEnd - item.startTime) };
               }
-              
               if (info.type === 'trim-start') {
                 const fixedEnd = info.initialStartTime + info.initialDuration;
                 const rawStart = info.initialStartTime + deltaTime;

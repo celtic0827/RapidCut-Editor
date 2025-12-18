@@ -1,15 +1,13 @@
-
 import React, { memo, useRef, useEffect, useMemo } from 'react';
-import { Type, Music, Waves } from 'lucide-react';
-import { TimelineItem } from './types';
+import { Type, Music } from 'lucide-react';
+import { TimelineItem } from './types.ts';
 import { 
   LANE_HEIGHT_TEXT, 
   LANE_HEIGHT_VIDEO, 
-  LANE_HEIGHT_AUDIO,
   CLIP_HEIGHT_TEXT,
   CLIP_HEIGHT_VIDEO,
   CLIP_HEIGHT_AUDIO
-} from './constants';
+} from './constants.ts';
 
 interface ClipProps {
   item: TimelineItem;
