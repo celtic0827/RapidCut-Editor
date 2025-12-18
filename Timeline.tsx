@@ -1,8 +1,16 @@
 
 import React from 'react';
-import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid } from 'lucide-react';
+import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat } from 'lucide-react';
 import { TimelineItem, TrackType } from './types';
-import { LANE_HEIGHT, MAX_VIDEO_DURATION, MIN_ZOOM, MAX_ZOOM } from './constants';
+import { 
+  LANE_HEIGHT_TEXT, 
+  LANE_HEIGHT_VIDEO, 
+  LANE_HEIGHT_AUDIO, 
+  RULER_HEIGHT,
+  MAX_VIDEO_DURATION, 
+  MIN_ZOOM, 
+  MAX_ZOOM 
+} from './constants';
 import { TimelineClip } from './TimelineClip';
 
 interface TimelineProps {
@@ -17,6 +25,12 @@ interface TimelineProps {
   onAddItem: (type: TrackType) => void;
   onSplit: () => void;
   onAutoArrange: () => void;
+  isPlaying: boolean;
+  setIsPlaying: (val: boolean) => void;
+  onJumpToStart: () => void;
+  onJumpToEnd: () => void;
+  isLooping: boolean;
+  setIsLooping: (val: boolean) => void;
   onMouseDown: (e: React.MouseEvent) => void;
   onStartDrag: (e: React.MouseEvent, item: TimelineItem, type: 'move' | 'trim-start' | 'trim-end') => void;
   renderRuler: React.ReactNode[];
@@ -31,6 +45,7 @@ interface TimelineProps {
 export const Timeline = ({
   items, pxPerSec, setPxPerSec, selectedItemId, setSelectedItemId,
   isMagnetEnabled, setIsMagnetEnabled, projectDuration, onAddItem, onSplit, onAutoArrange,
+  isPlaying, setIsPlaying, onJumpToStart, onJumpToEnd, isLooping, setIsLooping,
   onMouseDown, onStartDrag, renderRuler, playheadRef, timelineRef,
   onDropFromLibrary, draggingAsset, dragOverTime, onDragUpdate
 }: TimelineProps) => {
@@ -63,47 +78,71 @@ export const Timeline = ({
     }
   };
 
+  const trackLabels = [
+    { label: 'T1', height: LANE_HEIGHT_TEXT },
+    { label: 'V1', height: LANE_HEIGHT_VIDEO },
+    { label: 'A1', height: LANE_HEIGHT_AUDIO }
+  ];
+
   return (
-    <footer className="h-48 bg-[#1a1a1e] flex flex-col border-t border-black shrink-0 relative z-20">
+    <footer className="h-auto bg-[#1a1a1e] flex flex-col border-t border-black shrink-0 relative z-20 pb-safe">
       <div className="h-8 border-b border-black flex items-center justify-between px-3 bg-[#151518]">
         {/* Left: Track Management */}
-        <div className="flex gap-4 w-1/4">
+        <div className="flex gap-4 w-1/5">
           <button onClick={() => onAddItem('video')} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Video</button>
           <button onClick={() => onAddItem('text')} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Text</button>
         </div>
         
-        {/* Center: Editing Tools */}
-        <div className="flex items-center bg-black/40 rounded px-1 h-6">
-          <button 
-            onClick={onSplit}
-            className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all rounded-l-sm border-r border-white/5"
-            title="Split Clip (S)"
-          >
-            <Scissors size={11} />
-            <span className="text-[9px] font-black uppercase tracking-tighter">Split</span>
-          </button>
-          
-          <button 
-            onClick={onAutoArrange}
-            className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all border-r border-white/5"
-            title="Auto Arrange Sequence"
-          >
-            <LayoutGrid size={11} />
-            <span className="text-[9px] font-black uppercase tracking-tighter">Arrange</span>
-          </button>
+        {/* Center area: Edit tools & Playback controls */}
+        <div className="flex-1 flex items-center justify-center gap-6">
+          {/* Editing Tools */}
+          <div className="flex items-center bg-black/40 rounded px-1 h-6">
+            <button 
+              onClick={onSplit}
+              className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all rounded-l-sm border-r border-white/5"
+              title="Split Clip (S)"
+            >
+              <Scissors size={11} />
+              <span className="text-[9px] font-black uppercase tracking-tighter">Split</span>
+            </button>
+            <button 
+              onClick={onAutoArrange}
+              className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all border-r border-white/5"
+              title="Auto Arrange Sequence"
+            >
+              <LayoutGrid size={11} />
+              <span className="text-[9px] font-black uppercase tracking-tighter">Arrange</span>
+            </button>
+            <button 
+              onClick={() => setIsMagnetEnabled(!isMagnetEnabled)} 
+              className={`px-3 py-1 flex items-center gap-1.5 transition-all rounded-r-sm ${isMagnetEnabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
+              title="Toggle Magnet Snap"
+            >
+              <Magnet size={11} />
+              <span className="text-[9px] font-black uppercase tracking-tighter">Magnet</span>
+            </button>
+          </div>
 
-          <button 
-            onClick={() => setIsMagnetEnabled(!isMagnetEnabled)} 
-            className={`px-3 py-1 flex items-center gap-1.5 transition-all rounded-r-sm ${isMagnetEnabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
-            title="Toggle Magnet Snap"
-          >
-            <Magnet size={11} />
-            <span className="text-[9px] font-black uppercase tracking-tighter">Magnet</span>
-          </button>
+          {/* Playback Controls (Moved here) */}
+          <div className="flex items-center gap-1 bg-black/40 rounded px-1.5 h-6">
+            <button onClick={onJumpToStart} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipBack size={12} fill="currentColor" /></button>
+            <button onClick={() => setIsPlaying(!isPlaying)} className="w-5 h-5 flex items-center justify-center rounded-full bg-zinc-200 text-black hover:bg-white transition-all">
+              {isPlaying ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <button onClick={onJumpToEnd} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipForward size={12} fill="currentColor" /></button>
+            <div className="w-[1px] h-3 bg-white/10 mx-1" />
+            <button 
+              onClick={() => setIsLooping(!isLooping)} 
+              className={`p-1 rounded transition-all ${isLooping ? 'text-indigo-400' : 'text-zinc-600 hover:text-zinc-400'}`}
+              title="Toggle Loop"
+            >
+              <Repeat size={11} className={isLooping ? 'animate-pulse' : ''} />
+            </button>
+          </div>
         </div>
 
         {/* Right: Viewport Controls */}
-        <div className="flex items-center justify-end gap-3 w-1/4">
+        <div className="flex items-center justify-end gap-3 w-1/5">
           <div className="flex items-center gap-2 bg-black/20 px-2 rounded h-5">
             <ZoomOut size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.max(MIN_ZOOM, p * 0.8))} />
             <input 
@@ -116,23 +155,23 @@ export const Timeline = ({
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden relative">
+      <div className="flex flex-row overflow-hidden relative min-h-0">
         <div className="w-10 border-r border-black flex flex-col bg-[#1a1a1e] shrink-0 z-40">
-           <div style={{ height: '24px' }} className="border-b border-black/50 bg-[#151518] shrink-0" />
-           {['T1', 'V1', 'A1'].map(label => (
-             <div key={label} style={{ height: `${LANE_HEIGHT}px` }} className="flex items-center justify-center text-[9px] font-black text-zinc-700 border-b border-black/50 shrink-0">{label}</div>
+           <div style={{ height: `${RULER_HEIGHT}px` }} className="border-b border-black/50 bg-[#151518] shrink-0" />
+           {trackLabels.map(t => (
+             <div key={t.label} style={{ height: `${t.height}px` }} className={`flex items-center justify-center text-[9px] font-black border-b border-black/50 shrink-0 ${t.label === 'V1' ? 'text-indigo-400 bg-indigo-500/5' : 'text-zinc-700'}`}>{t.label}</div>
            ))}
         </div>
 
         <div 
           ref={timelineRef} 
-          className="flex-1 overflow-x-auto relative bg-[#0c0c0e] scrollbar-thin scroll-smooth" 
+          className="flex-1 overflow-x-auto overflow-y-hidden relative bg-[#0c0c0e] scrollbar-thin scroll-smooth" 
           onMouseDown={onMouseDown}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
           <div className="h-full relative" style={{ width: MAX_VIDEO_DURATION * pxPerSec + 200 }}>
-            <div style={{ height: '24px' }} className="w-full border-b border-white/5 relative bg-black/5 cursor-crosshair shrink-0">
+            <div style={{ height: `${RULER_HEIGHT}px` }} className="w-full border-b border-white/5 relative bg-black/5 cursor-crosshair shrink-0">
               {renderRuler}
             </div>
             
@@ -140,10 +179,9 @@ export const Timeline = ({
                <div className="absolute top-0 right-0 h-full w-[2px] bg-zinc-600/50 shadow-[0_0_8px_rgba(255,255,255,0.1)]" />
             </div>
 
-            <div className="relative h-full">
-              {[0, 1, 2].map(i => <div key={i} style={{ height: `${LANE_HEIGHT}px` }} className="w-full border-b border-white/5 shrink-0" />)}
+            <div className="relative">
+              {trackLabels.map(t => <div key={t.label} style={{ height: `${t.height}px` }} className="w-full border-b border-white/5 shrink-0" />)}
               
-              {/* Actual Clips */}
               {items.map(item => (
                 <TimelineClip 
                   key={item.id} item={item} isSelected={selectedItemId === item.id}
@@ -153,12 +191,8 @@ export const Timeline = ({
                 />
               ))}
 
-              {/* Ghost Preview for Library Dragging */}
               {draggingAsset && dragOverTime !== null && (
-                <div 
-                  className="absolute opacity-40 pointer-events-none z-50 animate-pulse"
-                  style={{ left: 0, top: 0, width: '100%', height: '100%' }}
-                >
+                <div className="absolute opacity-40 pointer-events-none z-50 animate-pulse" style={{ left: 0, top: 0, width: '100%', height: '100%' }}>
                   <TimelineClip 
                     item={{
                       id: 'ghost',

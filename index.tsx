@@ -10,7 +10,6 @@ import { MediaBin } from './MediaBin';
 import { PreviewPlayer } from './PreviewPlayer';
 import { Inspector } from './Inspector';
 import { Timeline } from './Timeline';
-import { TransportControls } from './TransportControls';
 
 type DragType = 'move' | 'trim-start' | 'trim-end';
 
@@ -196,7 +195,6 @@ function RapidCutEditor() {
 
   const autoArrangeClips = useCallback(() => {
     setItems(prev => {
-      // Specifically target only video items for arrangement
       const videos = prev.filter(i => i.type === 'video').sort((a, b) => a.startTime - b.startTime);
       const others = prev.filter(i => i.type !== 'video');
       
@@ -207,7 +205,6 @@ function RapidCutEditor() {
         return updated;
       });
       
-      // Merge arranged videos with original position non-video items
       return [...arrangedVideos, ...others];
     });
   }, []);
@@ -286,17 +283,11 @@ function RapidCutEditor() {
               } else if (info.type === 'trim-end') {
                 const rawNextDur = Math.max(0.1, info.initialDuration + deltaTime);
                 const rawNextEnd = item.startTime + rawNextDur;
-                
-                // Content limit for end-trim: originalDuration
                 let maxDur = Infinity;
                 if (item.type === 'video' && !item.allowExtension && item.originalDuration) {
                   maxDur = item.originalDuration - item.trimStart;
                 }
-
-                if (!isMagnetEnabled) {
-                  return { ...item, duration: Math.max(0.1, Math.min(rawNextDur, maxDur)) };
-                }
-
+                if (!isMagnetEnabled) return { ...item, duration: Math.max(0.1, Math.min(rawNextDur, maxDur)) };
                 let bestEnd = rawNextEnd;
                 let minDelta = snapThresholdTime;
                 for (const p of snapPoints) {
@@ -306,25 +297,15 @@ function RapidCutEditor() {
                 let nextDur = Math.min(bestEnd - item.startTime, maxDur);
                 return { ...item, duration: Math.max(0.1, nextDur) };
               } else if (info.type === 'trim-start') {
-                // Calculate how much we are trying to shift the start
                 let effectiveDelta = deltaTime;
-                
-                // Restriction: Cannot trim left past the original video start (trimStart = 0)
-                // trimStart = initialTrimStart + delta. We want trimStart >= 0.
-                // delta >= -initialTrimStart.
-                if (effectiveDelta < -info.initialTrimStart) {
-                  effectiveDelta = -info.initialTrimStart;
-                }
-
+                if (effectiveDelta < -info.initialTrimStart) effectiveDelta = -info.initialTrimStart;
                 const rawNextStart = info.initialStartTime + effectiveDelta;
                 const fixedEnd = info.initialStartTime + info.initialDuration;
-                
                 let bestStart = rawNextStart;
                 if (isMagnetEnabled) {
                   let minDelta = snapThresholdTime;
                   for (const p of snapPoints) {
                     const d = Math.abs(rawNextStart - p);
-                    // Magnet should still respect the trimStart boundary
                     if (d < minDelta) {
                       const candidateStart = p;
                       const candidateDelta = candidateStart - info.initialStartTime;
@@ -335,12 +316,8 @@ function RapidCutEditor() {
                     }
                   }
                 }
-                
-                // Ensure we don't trim past the end of the clip
                 if (bestStart >= fixedEnd - 0.1) bestStart = fixedEnd - 0.1;
-                
                 const finalDelta = bestStart - info.initialStartTime;
-
                 return { 
                   ...item, 
                   startTime: bestStart, 
@@ -405,7 +382,6 @@ function RapidCutEditor() {
         />
         <div className="flex-1 flex flex-col bg-black relative overflow-hidden min-h-0">
           <PreviewPlayer videoRef={videoRef} items={items} currentTime={internalTimeRef.current} projectDuration={projectDuration} projectSettings={projectSettings} isShakeEnabled={isShakeEnabled} shakeIntensity={shakeIntensity} isPlaying={isPlaying} />
-          <TransportControls isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={jumpToStart} onJumpToEnd={jumpToEnd} isLooping={isLooping} setIsLooping={setIsLooping} />
         </div>
         <Inspector 
           activeItem={items.find(i => i.id === selectedItemId)} 
@@ -426,6 +402,9 @@ function RapidCutEditor() {
         }}
         onSplit={splitClip}
         onAutoArrange={autoArrangeClips}
+        isPlaying={isPlaying} setIsPlaying={setIsPlaying}
+        onJumpToStart={jumpToStart} onJumpToEnd={jumpToEnd}
+        isLooping={isLooping} setIsLooping={setIsLooping}
         onMouseDown={(e) => { isScrubbingRef.current = true; setIsPlaying(false); handleScrub(e.clientX); }}
         onStartDrag={startDrag} renderRuler={renderRuler} 
         playheadRef={playheadRef} timelineRef={timelineRef}
@@ -439,8 +418,14 @@ function RapidCutEditor() {
         .animate-handheld { animation: handheld 0.9s infinite ease-in-out; }
         .animate-reveal { animation: reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
         @keyframes reveal { 0% { opacity: 0; transform: translateY(10px); filter: blur(4px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
-        .scrollbar-thin::-webkit-scrollbar { width: 4px; height: 4px; }
-        .scrollbar-thin::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+        /* Updated local scrollbars for internal timeline: 3x width (12px), 2x height (8px), min-width 100px */
+        .scrollbar-thin::-webkit-scrollbar { width: 12px; height: 8px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { 
+          background: #333; 
+          border-radius: 4px; 
+          border: 2px solid #1a1a1e; 
+          min-width: 100px;
+        }
       `}</style>
     </div>
   );

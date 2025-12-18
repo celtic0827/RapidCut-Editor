@@ -2,7 +2,14 @@
 import React, { memo, useRef, useEffect, useMemo } from 'react';
 import { Type, Music } from 'lucide-react';
 import { TimelineItem } from './types';
-import { LANE_HEIGHT } from './constants';
+import { 
+  LANE_HEIGHT_TEXT, 
+  LANE_HEIGHT_VIDEO, 
+  LANE_HEIGHT_AUDIO,
+  CLIP_HEIGHT_TEXT,
+  CLIP_HEIGHT_VIDEO,
+  CLIP_HEIGHT_AUDIO
+} from './constants';
 
 interface ClipProps {
   item: TimelineItem;
@@ -46,8 +53,19 @@ export const TimelineClip = memo(({
   onTrimStart 
 }: ClipProps) => {
   const clipWidth = item.duration * pxPerSec;
-  const top = item.type === 'text' ? 2 : item.type === 'video' ? LANE_HEIGHT + 2 : (LANE_HEIGHT * 2) + 2;
   
+  // Dynamic positioning and height based on track type
+  let top = 2;
+  let height = CLIP_HEIGHT_TEXT;
+  
+  if (item.type === 'video') {
+    top = LANE_HEIGHT_TEXT + 2;
+    height = CLIP_HEIGHT_VIDEO;
+  } else if (item.type === 'audio') {
+    top = LANE_HEIGHT_TEXT + LANE_HEIGHT_VIDEO + 2;
+    height = CLIP_HEIGHT_AUDIO;
+  }
+
   const thumbnails = useMemo(() => {
     if (item.type !== 'video' || !item.url) return null;
     
@@ -72,12 +90,12 @@ export const TimelineClip = memo(({
 
   return (
     <div
-      className="absolute h-8 z-20"
+      className="absolute z-20"
       style={{
         left: item.startTime * pxPerSec,
         top: top,
         width: clipWidth,
-        // We use overflow-visible so the ghost can extend to the left of trimStart
+        height: height,
         overflow: 'visible'
       }}
     >
@@ -109,10 +127,6 @@ export const TimelineClip = memo(({
           </div>
         )}
 
-        {/* Edge highlights for active segment */}
-        <div className="absolute inset-y-0 left-0 w-[1px] bg-white/10 z-10 pointer-events-none" />
-        <div className="absolute inset-y-0 right-0 w-[1px] bg-white/10 z-10 pointer-events-none" />
-
         {/* Interaction layer */}
         <div 
           className="absolute inset-0 z-10 cursor-inherit pointer-events-auto"
@@ -125,15 +139,14 @@ export const TimelineClip = memo(({
 
         {/* Labels layer */}
         {item.type !== 'video' && (
-          <div className="absolute inset-0 z-20 flex items-center gap-1.5 px-2 truncate pointer-events-none">
-            {item.type === 'text' && <Type size={11} className="shrink-0 text-white/60" />}
-            {item.type === 'audio' && <Music size={11} className="shrink-0 text-white/60" />}
-            <span className="truncate select-none uppercase tracking-tighter text-[10px] font-bold text-white/90 drop-shadow-md">{item.name}</span>
+          <div className="absolute inset-0 z-20 flex items-center gap-1.5 px-2 truncate pointer-events-none text-white/90">
+            {item.type === 'text' && <Type size={11} className="shrink-0" />}
+            {item.type === 'audio' && <Music size={11} className="shrink-0" />}
+            <span className="truncate select-none uppercase tracking-tighter text-[10px] font-bold drop-shadow-md">{item.name}</span>
           </div>
         )}
 
-        {/* Trimming interaction zones are kept inside the active segment div to ensure they match boundaries */}
-        {/* Left Trim Handle */}
+        {/* Trimming interaction zones */}
         <div 
           onMouseDown={(e) => { 
             e.stopPropagation();
@@ -141,10 +154,9 @@ export const TimelineClip = memo(({
           }}
           className="absolute left-0 top-0 bottom-0 w-3 hover:bg-white/10 cursor-ew-resize transition-colors flex items-center justify-center group z-30"
         >
-          <div className={`w-[2px] h-3 rounded-none ${isSelected ? 'bg-green-400' : 'bg-blue-400/50 group-hover:bg-blue-300'}`} />
+          <div className={`w-[2px] h-1/2 rounded-none ${isSelected ? 'bg-green-400' : 'bg-blue-400/50 group-hover:bg-blue-300'}`} />
         </div>
 
-        {/* Right Trim Handle */}
         <div 
           onMouseDown={(e) => { 
             e.stopPropagation();
@@ -152,7 +164,7 @@ export const TimelineClip = memo(({
           }}
           className="absolute right-0 top-0 bottom-0 w-3 hover:bg-white/10 cursor-ew-resize transition-colors flex items-center justify-center group z-30"
         >
-          <div className={`w-[2px] h-3 rounded-none ${isSelected ? 'bg-green-400' : 'bg-blue-400/50 group-hover:bg-blue-300'}`} />
+          <div className={`w-[2px] h-1/2 rounded-none ${isSelected ? 'bg-green-400' : 'bg-blue-400/50 group-hover:bg-blue-300'}`} />
         </div>
       </div>
     </div>
