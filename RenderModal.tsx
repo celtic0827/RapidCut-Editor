@@ -1,10 +1,8 @@
 import React, { useState, useRef } from 'react';
-import { X, Loader2, CheckCircle2, AlertCircle, Music, ShieldCheck, Zap, HardDriveDownload, AlertTriangle } from 'lucide-react';
+import { X, Loader2, CheckCircle2, ShieldCheck, HardDriveDownload, AlertTriangle } from 'lucide-react';
 import { TimelineItem, ProjectSettings, RenderSettings } from './types';
-
-// 我們改用 index.html 中引入的 UMD 版本全局對象，以避開 ESM Worker 的跨域攔截問題
-const { FFmpeg } = (window as any).FFmpegWasm || {};
-const { toBlobURL } = (window as any).FFmpegUtil || {};
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL } from '@ffmpeg/util';
 
 interface RenderModalProps {
   isOpen: boolean;
@@ -24,7 +22,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     bitrate: 10000000 
   });
 
-  const ffmpegRef = useRef<any>(null);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
   const abortController = useRef<boolean>(false);
 
   if (!isOpen) return null;
@@ -33,33 +31,36 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     if (ffmpegRef.current) return ffmpegRef.current;
     
     setStatus('loading-wasm');
-    
-    if (!FFmpeg) {
-      throw new Error("FFmpeg 庫尚未載入。請檢查網路連接。");
-    }
-
     const ffmpeg = new FFmpeg();
     
-    // 優先考慮穩定性：在不支援 SharedArrayBuffer 的環境中強制載入單線程版本
-    // 這裡我們使用與 0.12.10 相容的核心路徑
+    // 使用 ESM 版本核心路徑
     const coreVersion = '0.12.10';
-    const isSharedArrayBufferEnabled = typeof SharedArrayBuffer !== 'undefined';
-    
-    // 如果沒有 COOP/COEP，我們必須使用不支持多線程的環境
-    const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/umd`;
+    const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
     
     try {
-      // 終極解決方案：使用 toBlobURL 將跨域腳本轉換為本地 Blob
-      // 這能解決大部分沙盒環境下的 'Failed to construct Worker' 錯誤
+      // 關鍵修復：使用 toBlobURL 確保所有組件都通過 Blob 載入
+      // 這能讓瀏覽器認為腳本是同源的，解決 Vercel 上的跨域 Worker 攔截問題
+      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+      const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        // 即使是單線程模式，也建議提供 workerURL 以防萬一
-        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+        coreURL,
+        wasmURL,
+        workerURL,
       });
     } catch (err: any) {
       console.error('FFmpeg Load Error Details:', err);
-      throw new Error(`渲染引擎啟動失敗。這通常是因為當前託管環境禁止了 Web Worker 的跨域運行。建議在支援 COOP/COEP 的伺服器上部署，或更換瀏覽器試試。`);
+      
+      // 針對常見錯誤提供精準診斷
+      let customMsg = "初始化失敗。";
+      if (typeof SharedArrayBuffer === 'undefined') {
+        customMsg = "瀏覽器未啟用 SharedArrayBuffer。請確保部署環境已設置 COOP/COEP 標頭（Vercel 已配置，請重啟或檢查 vercel.json）。";
+      } else if (err.message?.includes('Worker')) {
+        customMsg = "Web Worker 啟動被攔截。請更換為 Chrome 或 Edge 瀏覽器重試。";
+      }
+      
+      throw new Error(customMsg);
     }
     
     ffmpegRef.current = ffmpeg;
@@ -249,12 +250,12 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         <div className="p-8 text-center">
           {status === 'idle' && (
             <div className="space-y-6">
-              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-start gap-3 text-left">
-                <ShieldCheck size={16} className="text-emerald-400 mt-0.5" />
+              <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
+                <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">相容性渲染模式 (v5)</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">Vercel 高效渲染模式 (v6)</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">
-                    已自動切換至 UMD 模式並套用 Blob 封裝技術。這專為嚴格的沙盒環境設計，能大幅降低跨域錯誤率。
+                    已自動配置 COOP/COEP 標頭與 Blob 封裝。這將解鎖多線程加速並避開所有跨域攔截。
                   </p>
                 </div>
               </div>

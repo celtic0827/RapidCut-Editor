@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RapidCut Editor</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- 引入 UMD 版本的 FFmpeg 和工具函式，這在沙盒環境中比 ESM 版本更具相容性 -->
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
   <script type="importmap">
 {
   "imports": {
@@ -16,6 +13,8 @@
     "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
     "lucide-react": "https://esm.sh/lucide-react@0.475.0",
     "mp4box": "https://esm.sh/mp4box@0.5.2",
+    "@ffmpeg/ffmpeg": "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
+    "@ffmpeg/util": "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js",
     "react/": "https://esm.sh/react@^19.2.3/",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
@@ -28,7 +27,6 @@
       background-color: #0f0f12;
       overflow: hidden;
     }
-    /* Updated scrollbars: 3x width (thickness), 2x height (thickness) */
     ::-webkit-scrollbar {
       width: 18px;
       height: 12px;
@@ -40,8 +38,7 @@
       background: #3f3f46;
       border-radius: 4px;
       border: 3px solid #15151a;
-      min-width: 100px; /* Minimum length of horizontal thumb */
-      min-height: 100px; /* Minimum length of vertical thumb */
+      min-width: 100px;
     }
     ::-webkit-scrollbar-thumb:hover {
       background: #52525b;
