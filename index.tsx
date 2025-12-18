@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -427,7 +428,10 @@ function RapidCutEditor() {
   }, [totalTimelineDuration, pxPerSec]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
+    <div 
+      className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]"
+      style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh' }}
+    >
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
       <RenderModal 
         isOpen={showRenderModal} 
@@ -443,7 +447,7 @@ function RapidCutEditor() {
         timeDisplayRef={timeDisplayRef} 
         projectDuration={projectDuration} 
       />
-      <main className="flex-1 flex overflow-hidden min-h-0">
+      <main className="flex-1 flex overflow-hidden min-h-0" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <div className="flex shrink-0">
           <MediaBin 
             library={library as any} 
