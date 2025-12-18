@@ -21,7 +21,8 @@ interface ClipProps {
 }
 
 // Sub-component to render a single frame at a specific time
-const VideoFrame = ({ url, time }: { url: string; time: number }) => {
+// Using React.FC to properly handle React's internal props like 'key'
+const VideoFrame: React.FC<{ url: string; time: number }> = ({ url, time }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {

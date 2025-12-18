@@ -45,7 +45,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const mp4boxFile = MP4Box.createFile();
       let videoTrackId: number | null = null;
 
-      // 1. Audio Rendering (Keep simple for now, can expand later)
+      // 1. Audio Rendering (Offline)
       const sampleRate = 44100;
       const offlineCtx = new OfflineAudioContext(2, Math.max(1, projectDuration * sampleRate), sampleRate);
       
@@ -63,7 +63,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           gain.connect(offlineCtx.destination);
           source.start(clip.startTime, clip.trimStart, clip.duration);
         } catch (e) {
-          console.warn(`Audio decode failed for clip ${clip.id}`, e);
+          console.warn(`Audio decode skip: ${clip.id}`, e);
         }
       }
       await offlineCtx.startRendering();
@@ -103,7 +103,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
-      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
+      const ctx = canvas.getContext('2d', { alpha: false })!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       
       const videoCache = new Map<string, HTMLVideoElement>();
       for (const clip of videoClips) {
@@ -114,12 +116,17 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         v.muted = true;
         v.preload = "auto";
         v.playsInline = true;
-        // Pre-warm the decoder
-        await new Promise(r => { 
-          v.onloadedmetadata = async () => {
-            v.currentTime = clip.trimStart;
-            r(null);
+        
+        // Wait for metadata AND ensure it's not "empty"
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error(`Timeout loading ${clip.name}`)), 10000);
+          v.onloadedmetadata = () => {
+            clearTimeout(timeout);
+            // Kick the playhead to force decoder initialization
+            v.currentTime = 0.001; 
+            resolve(null);
           };
+          v.onerror = () => reject(new Error(`Failed to load ${clip.name}`));
         });
         videoCache.set(clip.id, v);
       }
@@ -131,6 +138,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         const currentTime = i / fps;
         setProgress(Math.round((i / totalFrames) * 100));
 
+        // Clear with true black
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, width, height);
 
@@ -140,31 +148,33 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
 
         if (activeVideo) {
           const v = videoCache.get(activeVideo.id)!;
-          const seekTime = (currentTime - activeVideo.startTime) + activeVideo.trimStart;
+          // Use a tiny offset to force a re-render if the time is the same as previous
+          const seekTime = (currentTime - activeVideo.startTime) + activeVideo.trimStart + 0.00001;
           
-          // CRITICAL FIX: Safe Seek Pattern
           await new Promise<void>((resolve) => {
-            const onSeeked = () => {
+            let isResolved = false;
+            const cleanup = () => {
+              if (isResolved) return;
+              isResolved = true;
               v.removeEventListener('seeked', onSeeked);
               resolve();
             };
-            // If we are already extremely close to the target time, don't wait for seeked event 
-            // as it might not fire in some browsers.
-            if (Math.abs(v.currentTime - seekTime) < 0.001) {
-              return resolve();
-            }
+
+            const onSeeked = () => {
+              // Extra safety: some browsers trigger seeked before the frame buffer is swapped.
+              // We use requestAnimationFrame as a "yield" to the browser's internal render task.
+              requestAnimationFrame(() => cleanup());
+            };
+
             v.addEventListener('seeked', onSeeked);
             v.currentTime = seekTime;
             
-            // Safety timeout to prevent hanging on corrupted frames
-            setTimeout(() => {
-              v.removeEventListener('seeked', onSeeked);
-              resolve();
-            }, 500);
+            // Fail-safe: if seeked doesn't fire in 300ms, proceed anyway
+            setTimeout(cleanup, 300);
           });
 
-          // Verify readyState before drawing
-          if (v.readyState >= 2) {
+          // Final verification: ensure we have a valid frame
+          if (v.readyState >= 2 && v.videoWidth > 0) {
             ctx.save();
             const fx = activeVideo.fx;
             if (fx?.shakeEnabled) {
@@ -185,7 +195,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           }
         }
 
-        // Overlay Text
+        // Overlay Text Layers
         const activeTexts = items.filter(t => 
           t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration
         );
@@ -199,13 +209,16 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           const age = currentTime - textClip.startTime;
-          if (age < 0.5) ctx.globalAlpha = age / 0.5;
+          // Fade in first 0.3s
+          if (age < 0.3) ctx.globalAlpha = age / 0.3;
           ctx.fillText(textClip.content?.toUpperCase() || "", width / 2, height / 2);
           ctx.restore();
         }
 
-        const frame = new VideoFrame(canvas, { timestamp: Math.round(i * (1000000 / fps)) });
-        videoEncoder.encode(frame, { keyFrame: i % 60 === 0 });
+        // Generate VideoFrame for Encoder
+        const frameTimestamp = Math.round(i * (1000000 / fps));
+        const frame = new VideoFrame(canvas, { timestamp: frameTimestamp });
+        videoEncoder.encode(frame, { keyFrame: i % 30 === 0 }); // Keyframe every 1 second
         frame.close();
       }
 
@@ -215,12 +228,13 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       mp4boxFile.save(`${settings.filename}.mp4`);
       setStatus('completed');
 
-      videoCache.forEach(v => { v.src = ""; v.load(); });
+      // Resource Cleanup
+      videoCache.forEach(v => { v.pause(); v.src = ""; v.load(); });
 
     } catch (err: any) {
-      console.error(err);
+      console.error('Export Error:', err);
       setStatus('error');
-      setErrorMsg(err.message || 'Professional export failed.');
+      setErrorMsg(err.message || 'Export failed during frame processing.');
     }
   };
 
@@ -256,15 +270,15 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                   />
                 </div>
                 <div>
-                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">Bitrate</label>
+                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">Target Bitrate</label>
                   <select 
                     value={settings.bitrate}
                     onChange={e => setSettings({ ...settings, bitrate: parseInt(e.target.value) })}
                     className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500"
                   >
-                    <option value={8000000}>8 Mbps (Social Media)</option>
-                    <option value={15000000}>15 Mbps (High Quality)</option>
-                    <option value={40000000}>40 Mbps (ProRes-like)</option>
+                    <option value={8000000}>8 Mbps (Balanced)</option>
+                    <option value={18000000}>18 Mbps (YouTube HD)</option>
+                    <option value={50000000}>50 Mbps (Mastering)</option>
                   </select>
                 </div>
               </div>
@@ -272,7 +286,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                 onClick={handleStartRender}
                 className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs py-3 rounded-lg uppercase transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20"
               >
-                <Download size={16} /> Render Pro MP4
+                <Download size={16} /> Start Professional Render
               </button>
             </>
           )}
@@ -289,28 +303,31 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="text-center">
                 <div className="flex items-center justify-center gap-2 text-indigo-400 mb-2">
                   <Loader2 size={14} className="animate-spin" />
-                  <span className="text-[10px] font-black uppercase tracking-widest">Encoding Frame-By-Frame...</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-200">Processing Frames...</span>
                 </div>
-                <p className="text-[9px] text-zinc-500 uppercase tracking-tighter">Please keep this tab active.</p>
+                <p className="text-[9px] text-zinc-500 uppercase tracking-tighter">Syncing video decoders. Keep window focused.</p>
               </div>
             </div>
           )}
 
           {status === 'completed' && (
-            <div className="py-8 flex flex-col items-center gap-6">
+            <div className="py-8 flex flex-col items-center gap-6 animate-in zoom-in-95">
               <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center border border-emerald-500/50">
                 <CheckCircle2 size={40} className="text-emerald-500" />
               </div>
-              <h4 className="text-white font-black text-sm uppercase">Export Complete</h4>
-              <button onClick={handleClose} className="w-full bg-zinc-800 text-white font-black text-xs py-3 rounded-lg uppercase">Close</button>
+              <h4 className="text-white font-black text-sm uppercase tracking-widest">Export Perfected</h4>
+              <button onClick={handleClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase">Done</button>
             </div>
           )}
 
           {status === 'error' && (
             <div className="py-8 flex flex-col items-center gap-6">
               <AlertCircle size={40} className="text-rose-500" />
-              <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest text-center px-4">{errorMsg}</p>
-              <button onClick={() => setStatus('idle')} className="w-full bg-indigo-600 text-white font-black text-xs py-3 rounded-lg uppercase">Retry</button>
+              <div className="text-center px-4">
+                <p className="text-[10px] text-rose-400 font-bold uppercase tracking-widest mb-2">Technical Error</p>
+                <p className="text-[9px] text-zinc-500 leading-relaxed">{errorMsg}</p>
+              </div>
+              <button onClick={() => setStatus('idle')} className="w-full bg-indigo-600 text-white font-black text-xs py-3 rounded-lg uppercase">Try Again</button>
             </div>
           )}
         </div>
