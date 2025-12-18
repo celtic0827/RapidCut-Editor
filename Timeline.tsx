@@ -6,10 +6,7 @@ import {
   LANE_HEIGHT_TEXT, 
   LANE_HEIGHT_VIDEO, 
   LANE_HEIGHT_AUDIO, 
-  RULER_HEIGHT,
-  MAX_VIDEO_DURATION, 
-  MIN_ZOOM, 
-  MAX_ZOOM 
+  RULER_HEIGHT 
 } from './constants';
 import { TimelineClip } from './TimelineClip';
 
@@ -22,6 +19,7 @@ interface TimelineProps {
   isMagnetEnabled: boolean;
   setIsMagnetEnabled: (val: boolean) => void;
   projectDuration: number;
+  totalTimelineDuration: number;
   onAddItem: (type: TrackType) => void;
   onSplit: () => void;
   onAutoArrange: () => void;
@@ -44,7 +42,7 @@ interface TimelineProps {
 
 export const Timeline = ({
   items, pxPerSec, setPxPerSec, selectedItemId, setSelectedItemId,
-  isMagnetEnabled, setIsMagnetEnabled, projectDuration, onAddItem, onSplit, onAutoArrange,
+  isMagnetEnabled, setIsMagnetEnabled, projectDuration, totalTimelineDuration, onAddItem, onSplit, onAutoArrange,
   isPlaying, setIsPlaying, onJumpToStart, onJumpToEnd, isLooping, setIsLooping,
   onMouseDown, onStartDrag, renderRuler, playheadRef, timelineRef,
   onDropFromLibrary, draggingAsset, dragOverTime, onDragUpdate
@@ -95,7 +93,6 @@ export const Timeline = ({
         
         {/* Center area: Edit tools & Playback controls */}
         <div className="flex-1 flex items-center justify-center gap-6">
-          {/* Editing Tools */}
           <div className="flex items-center bg-black/40 rounded px-1 h-6">
             <button 
               onClick={onSplit}
@@ -123,7 +120,6 @@ export const Timeline = ({
             </button>
           </div>
 
-          {/* Playback Controls (Moved here) */}
           <div className="flex items-center gap-1 bg-black/40 rounded px-1.5 h-6">
             <button onClick={onJumpToStart} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipBack size={12} fill="currentColor" /></button>
             <button onClick={() => setIsPlaying(!isPlaying)} className="w-5 h-5 flex items-center justify-center rounded-full bg-zinc-200 text-black hover:bg-white transition-all">
@@ -144,13 +140,13 @@ export const Timeline = ({
         {/* Right: Viewport Controls */}
         <div className="flex items-center justify-end gap-3 w-1/5">
           <div className="flex items-center gap-2 bg-black/20 px-2 rounded h-5">
-            <ZoomOut size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.max(MIN_ZOOM, p * 0.8))} />
+            <ZoomOut size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.max(4, p * 0.8))} />
             <input 
-              type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.1" value={pxPerSec} 
+              type="range" min={4} max={60} step="0.1" value={pxPerSec} 
               onChange={(e) => setPxPerSec(parseFloat(e.target.value))}
               className="w-16 h-1 bg-zinc-800 appearance-none rounded-full accent-indigo-500 cursor-pointer"
             />
-            <ZoomIn size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.min(MAX_ZOOM, p * 1.2))} />
+            <ZoomIn size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.min(60, p * 1.2))} />
           </div>
         </div>
       </div>
@@ -170,7 +166,8 @@ export const Timeline = ({
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
-          <div className="h-full relative" style={{ width: MAX_VIDEO_DURATION * pxPerSec + 200 }}>
+          {/* Dynamic Width Container */}
+          <div className="h-full relative" style={{ width: totalTimelineDuration * pxPerSec + 100 }}>
             <div style={{ height: `${RULER_HEIGHT}px` }} className="w-full border-b border-white/5 relative bg-black/5 cursor-crosshair shrink-0">
               {renderRuler}
             </div>

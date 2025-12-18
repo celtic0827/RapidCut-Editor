@@ -3,7 +3,14 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { createRoot } from 'react-dom/client';
 
 import { TimelineItem, ProjectSettings, TrackType } from './types';
-import { SNAP_THRESHOLD, MAX_VIDEO_DURATION, MIN_ZOOM, MAX_ZOOM } from './constants';
+import { 
+  SNAP_THRESHOLD, 
+  MAX_VIDEO_DURATION, 
+  MIN_ZOOM, 
+  MAX_ZOOM, 
+  TIMELINE_BUFFER_SECONDS, 
+  MIN_TIMELINE_DURATION 
+} from './constants';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
 import { Header } from './Header';
 import { MediaBin } from './MediaBin';
@@ -47,6 +54,11 @@ function RapidCutEditor() {
   const dragInfo = useRef<{ id: string; type: DragType; initialX: number; initialStartTime: number; initialDuration: number; initialTrimStart: number; } | null>(null);
 
   const projectDuration = useMemo(() => items.length === 0 ? 0 : Math.max(...items.map(i => i.startTime + i.duration)), [items]);
+  
+  // Dynamic Timeline Total Length
+  const totalTimelineDuration = useMemo(() => {
+    return Math.min(MAX_VIDEO_DURATION, Math.max(MIN_TIMELINE_DURATION, projectDuration + TIMELINE_BUFFER_SECONDS));
+  }, [projectDuration]);
 
   const updateUI = useCallback((t: number) => {
     internalTimeRef.current = t;
@@ -75,7 +87,6 @@ function RapidCutEditor() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Utility for initial placements (Add from library)
   const getSnappedTime = useCallback((rawTime: number, excludeId: string | null = null) => {
     if (!isMagnetEnabled) return rawTime;
     const threshold = 12 / pxPerSec; 
@@ -339,12 +350,13 @@ function RapidCutEditor() {
   const renderRuler = useMemo(() => {
     const res = [];
     let step = pxPerSec < 6 ? 60 : pxPerSec < 12 ? 30 : 10;
-    for (let i = 0; i <= MAX_VIDEO_DURATION; i += step) {
+    // Optimized: Only render ruler markers up to dynamic total duration
+    for (let i = 0; i <= totalTimelineDuration; i += step) {
       const isMin = i % 60 === 0;
       res.push(<div key={i} className="absolute flex flex-col" style={{ left: i * pxPerSec }}><div className={`w-[1px] bg-zinc-700 mb-1 ${isMin ? 'h-3 bg-zinc-500' : 'h-2'}`} />{(isMin || pxPerSec > 10) && <span className={`text-[7px] font-mono leading-none ${isMin ? 'text-zinc-400 font-bold' : 'text-zinc-600'}`}>{Math.floor(i / 60)}:{(i % 60).toString().padStart(2, '0')}</span>}</div>);
     }
     return res;
-  }, [pxPerSec]);
+  }, [pxPerSec, totalTimelineDuration]);
 
   const handleDropFromLibrary = useCallback((asset: { name: string, url: string, duration: number }, startTime: number) => {
     const newItem: TimelineItem = { 
@@ -396,6 +408,7 @@ function RapidCutEditor() {
         selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId}
         isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled}
         projectDuration={projectDuration}
+        totalTimelineDuration={totalTimelineDuration}
         onAddItem={(type) => {
           const newItem: TimelineItem = { id: Math.random().toString(36).substr(2, 9), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', content: type === 'text' ? 'EDIT TEXT' : undefined, allowExtension: type === 'text' };
           setItems(p => [...p, newItem]); setSelectedItemId(newItem.id);
