@@ -125,20 +125,80 @@ function RapidCutEditor() {
     }
   }, [pxPerSec]);
 
+  const onSplit = useCallback(() => {
+    const t = internalTimeRef.current;
+    // 找出目前播放頭下方所有的媒體片段（不只是選中的）
+    const itemsToSplit = items.filter(i => t > i.startTime && t < i.startTime + i.duration);
+    if (itemsToSplit.length === 0) return;
+
+    setItems(prev => {
+      let newItems = [...prev];
+      itemsToSplit.forEach(item => {
+        const splitRel = t - item.startTime;
+        const index = newItems.findIndex(i => i.id === item.id);
+        if (index === -1) return;
+
+        const original = newItems[index];
+        const newItem: TimelineItem = {
+          ...original,
+          id: Math.random().toString(),
+          startTime: t,
+          duration: original.duration - splitRel,
+          trimStart: (original.trimStart || 0) + splitRel,
+          fx: original.fx ? { ...original.fx, seed: Math.floor(Math.random() * 100) } : undefined
+        };
+
+        newItems[index] = { ...original, duration: splitRel };
+        newItems.push(newItem);
+        setSelectedItemId(newItem.id);
+      });
+      return newItems;
+    });
+  }, [items]);
+
+  const onDeleteItem = useCallback((id: string, ripple = true) => {
+    setItems(prev => {
+      const itemToDelete = prev.find(i => i.id === id);
+      if (!itemToDelete) return prev;
+      
+      const filtered = prev.filter(i => i.id !== id);
+      if (!ripple) return filtered;
+
+      // 漣漪刪除：針對被刪除片段之後的所有片段進行位移
+      const shiftAmount = itemToDelete.duration;
+      return filtered.map(i => {
+        if (i.startTime > itemToDelete.startTime && (i.type === 'video' || i.type === 'audio')) {
+          return { ...i, startTime: Math.max(0, i.startTime - shiftAmount) };
+        }
+        return i;
+      });
+    });
+    setSelectedItemId(null);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isInput = (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      
+      if (isInput) return;
+
       if (e.code === 'Space') {
-        const target = e.target as HTMLElement;
-        if (!(target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      } else if (e.code === 'KeyS') {
+        e.preventDefault();
+        onSplit();
+      } else if (e.code === 'Backspace' || e.code === 'Delete') {
+        if (selectedItemId) {
           e.preventDefault();
-          if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-          setIsPlaying(prev => !prev);
+          onDeleteItem(selectedItemId, true); // 預設使用漣漪刪除達成極速剪輯
         }
       }
     };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, []);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onSplit, selectedItemId, onDeleteItem]);
 
   const animate = useCallback((now: number) => {
     if (!lastUpdateRef.current) lastUpdateRef.current = now;
@@ -171,19 +231,20 @@ function RapidCutEditor() {
   useEffect(() => updateUI(internalTimeRef.current), [pxPerSec, updateUI]);
 
   const handleImport = async (files: FileList) => {
-    const list = Array.from(files).filter(f => f.type.startsWith('video/'));
+    const list = Array.from(files).filter(f => f.type.startsWith('video/') || f.type.startsWith('audio/'));
     const importedAssets = [];
     for (const file of list) {
       const url = URL.createObjectURL(file);
+      const isAudio = file.type.startsWith('audio/');
       const duration = await new Promise<number>((r) => {
-        const v = document.createElement('video');
-        v.src = url;
-        v.onloadedmetadata = () => r(v.duration);
-        v.onerror = () => r(5);
+        const el = document.createElement(isAudio ? 'audio' : 'video');
+        el.src = url;
+        el.onloadedmetadata = () => r(el.duration);
+        el.onerror = () => r(5);
       });
-      const asset = { name: file.name, url, duration };
+      const asset = { name: file.name, url, duration, type: isAudio ? 'audio' : 'video' as TrackType };
       importedAssets.push(asset);
-      setLibrary(prev => [...prev, asset]);
+      setLibrary(prev => [...prev, asset as any]);
     }
     return importedAssets;
   };
@@ -194,15 +255,15 @@ function RapidCutEditor() {
     const newItems: TimelineItem[] = assets.map(asset => {
       const item: TimelineItem = { 
         id: Math.random().toString(), 
-        type: 'video', 
+        type: asset.type, 
         startTime: currentStart, 
         duration: asset.duration, 
         trimStart: 0, 
         originalDuration: asset.duration, 
         name: asset.name, 
         url: asset.url, 
-        color: 'bg-zinc-700', 
-        fx: { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } 
+        color: asset.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', 
+        fx: asset.type === 'video' ? { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } : undefined 
       };
       currentStart += asset.duration;
       return item;
@@ -251,10 +312,7 @@ function RapidCutEditor() {
         const deltaTime = (e.clientX - info.initialX) / pxPerSec;
         
         setItems(prev => {
-          // Calculate dynamic snapping threshold (e.g., 12 pixels) in seconds
           const snapThresholdSec = 12 / pxPerSec;
-          
-          // Snap points: Start of timeline, Playhead, and every other clip's boundary
           const snapPoints = [0, internalTimeRef.current];
           if (isMagnetEnabled) {
             prev.forEach(i => {
@@ -288,7 +346,6 @@ function RapidCutEditor() {
                 const snappedStart = getSnappedTime(newStart);
                 const snappedEnd = getSnappedTime(newStart + item.duration);
                 
-                // Prioritize start snap, then end snap
                 if (Math.abs(snappedStart - newStart) <= Math.abs(snappedEnd - (newStart + item.duration))) {
                   if (Math.abs(snappedStart - newStart) < snapThresholdSec) newStart = snappedStart;
                 } else {
@@ -301,13 +358,10 @@ function RapidCutEditor() {
               if (info.type === 'trim-end') {
                 const rawEnd = info.initialStartTime + info.initialDuration + deltaTime;
                 let finalEnd = getSnappedTime(rawEnd);
-                
-                // Trimming Constraints: Cannot trim past the source file's end
                 if (item.type === 'video' && !item.allowExtension) {
                    const maxEnd = item.startTime + (originalDuration - item.trimStart);
                    finalEnd = Math.min(finalEnd, maxEnd);
                 }
-                
                 return { ...item, duration: Math.max(0.1, finalEnd - item.startTime) };
               }
               
@@ -315,22 +369,17 @@ function RapidCutEditor() {
                 const fixedEnd = info.initialStartTime + info.initialDuration;
                 const rawStart = info.initialStartTime + deltaTime;
                 let finalStart = getSnappedTime(rawStart);
-                
-                // Prevent trimming past the fixed end
                 finalStart = Math.min(finalStart, fixedEnd - 0.1);
-
-                // Trimming Constraints: trimStart cannot be negative
                 if (item.type === 'video') {
-                  const minPossibleStart = info.initialStartTime - info.initialTrimStart;
+                  const minPossibleStart = info.initialStartTime - (info.initialTrimStart || 0);
                   finalStart = Math.max(finalStart, minPossibleStart);
                 }
-                
                 const finalDelta = finalStart - info.initialStartTime;
                 return { 
                   ...item, 
                   startTime: Math.max(0, finalStart), 
                   duration: fixedEnd - finalStart, 
-                  trimStart: info.initialTrimStart + finalDelta 
+                  trimStart: (info.initialTrimStart || 0) + finalDelta 
                 };
               }
             }
@@ -344,53 +393,26 @@ function RapidCutEditor() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, [pxPerSec, handleScrub, isMagnetEnabled]);
 
-  const onSplit = useCallback(() => {
-    if (!selectedItemId) return;
-    const item = items.find(i => i.id === selectedItemId);
-    if (!item) return;
-    const t = internalTimeRef.current;
-    if (t <= item.startTime || t >= item.startTime + item.duration) return;
-    
-    const splitRel = t - item.startTime;
-    const newItem: TimelineItem = {
-      ...item,
-      id: Math.random().toString(),
-      startTime: t,
-      duration: item.duration - splitRel,
-      trimStart: item.trimStart + splitRel,
-      fx: item.fx ? { ...item.fx, seed: Math.floor(Math.random() * 100) } : undefined
-    };
-    
-    setItems(prev => {
-      const updated = prev.map(i => i.id === item.id ? { ...i, duration: splitRel } : i);
-      return [...updated, newItem];
-    });
-    setSelectedItemId(newItem.id);
-  }, [items, selectedItemId]);
-
   const onAutoArrange = useCallback(() => {
     setItems(prev => {
-      // Only arrange 'video' track clips (V1)
       const videos = prev.filter(i => i.type === 'video').sort((a, b) => a.startTime - b.startTime);
-      const nonVideos = prev.filter(i => i.type !== 'video');
-      
+      const others = prev.filter(i => i.type !== 'video');
       let cursor = 0;
-      const arrangedVideos = videos.map(v => {
+      const arranged = videos.map(v => {
         const updated = { ...v, startTime: cursor };
         cursor += v.duration;
         return updated;
       });
-      
-      return [...arrangedVideos, ...nonVideos];
+      return [...arranged, ...others];
     });
   }, []);
 
   const onJumpToStart = useCallback(() => { updateUI(0); syncMedia(0, true); }, [updateUI, syncMedia]);
   const onJumpToEnd = useCallback(() => { updateUI(projectDuration); syncMedia(projectDuration, true); }, [updateUI, syncMedia, projectDuration]);
 
-  const onDropFromLibrary = useCallback((asset: { name: string, url: string, duration: number }, startTime: number) => {
+  const onDropFromLibrary = useCallback((asset: { name: string, url: string, duration: number, type: TrackType }, startTime: number) => {
     const newItem: TimelineItem = { 
-      id: Math.random().toString(), type: 'video', startTime, duration: asset.duration, trimStart: 0, originalDuration: asset.duration, name: asset.name, url: asset.url, color: 'bg-zinc-700', fx: { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } 
+      id: Math.random().toString(), type: asset.type, startTime, duration: asset.duration, trimStart: 0, originalDuration: asset.duration, name: asset.name, url: asset.url, color: asset.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', fx: asset.type === 'video' ? { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } : undefined 
     };
     setItems(p => [...p, newItem]);
     setSelectedItemId(newItem.id);
@@ -433,12 +455,9 @@ function RapidCutEditor() {
       <main className="flex-1 flex overflow-hidden min-h-0">
         <div className="flex shrink-0">
           <MediaBin 
-            library={library} 
+            library={library as any} 
             onImport={handleImport} 
-            onAddFromLibrary={(a) => {
-               const newItem: TimelineItem = { id: Math.random().toString(), type: 'video', startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', fx: { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } };
-               setItems(p => [...p, newItem]); setSelectedItemId(newItem.id);
-            }}
+            onAddFromLibrary={(a) => onDropFromLibrary(a as any, internalTimeRef.current)}
             onDragStart={setDraggingAsset}
           />
           <StylePalette 
@@ -456,7 +475,7 @@ function RapidCutEditor() {
         <Inspector 
           activeItem={items.find(i => i.id === selectedItemId)} 
           onUpdateItem={(id, upd) => setItems(p => p.map(i => i.id === id ? { ...i, ...upd } : i))} 
-          onDeleteItem={(id) => { setItems(p => p.filter(i => i.id !== id)); setSelectedItemId(null); }}
+          onDeleteItem={(id) => onDeleteItem(id, true)}
           onSavePreset={handleSavePreset}
         />
       </main>
@@ -466,7 +485,7 @@ function RapidCutEditor() {
         isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled}
         projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration}
         onAddItem={(type: TrackType) => {
-          const newItem: TimelineItem = { id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', content: type === 'text' ? 'EDIT TEXT' : undefined, effect: type === 'text' ? 'reveal' : undefined, fx: type === 'video' ? { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } : undefined };
+          const newItem: TimelineItem = { id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : type === 'audio' ? 'bg-emerald-600' : 'bg-indigo-600', content: type === 'text' ? 'EDIT TEXT' : undefined, effect: type === 'text' ? 'reveal' : undefined, fx: type === 'video' ? { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } : undefined };
           setItems(p => [...p, newItem]); setSelectedItemId(newItem.id);
         }}
         isPlaying={isPlaying} setIsPlaying={setIsPlaying}
