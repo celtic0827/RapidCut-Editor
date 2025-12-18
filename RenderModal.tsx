@@ -27,9 +27,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   if (!isOpen) return null;
 
   const handleStartRender = async () => {
-    if (!('VideoEncoder' in window)) {
+    if (!('VideoEncoder' in window) || !('AudioEncoder' in window)) {
       setStatus('error');
-      setErrorMsg('您的瀏覽器不支援 WebCodecs。請使用 Chrome。');
+      setErrorMsg('Your browser does not support full WebCodecs (Video/Audio). Please use the latest Chrome.');
       return;
     }
 
@@ -42,12 +42,11 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const totalFrames = Math.ceil(projectDuration * fps);
       const { width, height } = projectSettings;
 
-      // 建立 MP4Box 檔案實例
       const mp4boxFile = MP4Box.createFile();
       let videoTrackId: number | null = null;
       let audioTrackId: number | null = null;
 
-      // --- 1. 音訊預處理 (混音) ---
+      // 1. Audio Mixing (OfflineAudioContext)
       const sampleRate = 44100;
       const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
       
@@ -66,104 +65,98 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           gain.gain.value = clip.volume ?? 1.0;
           source.connect(gain);
           gain.connect(offlineCtx.destination);
+          // Standard video/audio clip duration and trim logic
           source.start(clip.startTime, clip.trimStart, clip.duration);
         } catch (e) {
-          console.warn(`音訊載入失敗: ${clip.id}`, e);
+          console.warn(`Audio clip ${clip.id} failed to load for render.`, e);
         }
       }
+      
       const mixedAudioBuffer = await offlineCtx.startRendering();
 
-      // --- 2. 音訊編碼器 ---
+      // 2. Audio Encoder Setup
+      // Fix: Access AudioEncoder via window to avoid "Cannot find name" error in environments with missing WebCodecs types
       const audioEncoder = new (window as any).AudioEncoder({
         output: (chunk: any, metadata: any) => {
-          if (audioTrackId === null && metadata?.decoderConfig) {
-            // AAC 必須有 description
-            const description = new Uint8Array(metadata.decoderConfig.description);
+          if (!audioTrackId) {
             audioTrackId = mp4boxFile.addTrack({
               timescale: 1000000,
               samplerate: sampleRate,
               channel_count: 2,
               hdlr: 'soun',
               type: 'mp4a',
-              description: description,
+              description: metadata?.decoderConfig?.description,
             });
           }
-          
-          if (audioTrackId !== null) {
-            const buffer = new ArrayBuffer(chunk.byteLength);
-            chunk.copyTo(buffer);
-            mp4boxFile.addSample(audioTrackId, buffer, {
-              duration: chunk.duration ?? 0,
-              dts: chunk.timestamp,
-              cts: chunk.timestamp,
-              is_sync: chunk.type === 'key',
-            });
-          }
+          const buffer = new ArrayBuffer(chunk.byteLength);
+          chunk.copyTo(buffer);
+          mp4boxFile.addSample(audioTrackId, buffer, {
+            duration: chunk.duration ?? 0,
+            dts: chunk.timestamp,
+            cts: chunk.timestamp,
+            is_sync: chunk.type === 'key',
+          });
         },
         error: (e: any) => { throw e; },
       });
 
       audioEncoder.configure({
-        codec: 'mp4a.40.2', 
+        codec: 'mp4a.40.2', // AAC-LC
         numberOfChannels: 2,
         sampleRate: sampleRate,
         bitrate: 128000,
       });
 
-      // --- 3. 影片編碼器 ---
+      // 3. Video Encoder Setup
+      // Note: VideoEncoder might also require (window as any).VideoEncoder depending on type environment
       const videoEncoder = new (window as any).VideoEncoder({
         output: (chunk: any, metadata: any) => {
-          if (videoTrackId === null && metadata?.decoderConfig) {
-            // H.264 關鍵：必須使用 avcDecoderConfigRecord
-            const description = new Uint8Array(metadata.decoderConfig.description);
+          if (!videoTrackId) {
             videoTrackId = mp4boxFile.addTrack({
               timescale: 1000000,
-              width: width,
-              height: height,
-              hdlr: 'vide',
-              type: 'avc1',
-              avcDecoderConfigRecord: description,
+              width, height,
+              nb_samples: totalFrames,
+              avcDecoderConfigRecord: metadata?.decoderConfig?.description,
             });
           }
-          
-          if (videoTrackId !== null) {
-            const buffer = new ArrayBuffer(chunk.byteLength);
-            chunk.copyTo(buffer);
-            mp4boxFile.addSample(videoTrackId, buffer, {
-              duration: chunk.duration || (1000000 / fps),
-              dts: chunk.timestamp,
-              cts: chunk.timestamp,
-              is_sync: chunk.type === 'key',
-            });
-          }
+          const buffer = new ArrayBuffer(chunk.byteLength);
+          chunk.copyTo(buffer);
+          mp4boxFile.addSample(videoTrackId, buffer, {
+            duration: chunk.duration || (1000000 / fps),
+            dts: chunk.timestamp,
+            cts: chunk.timestamp,
+            is_sync: chunk.type === 'key',
+          });
         },
         error: (e: any) => { throw e; },
       });
 
       videoEncoder.configure({
-        codec: 'avc1.42E01F', 
-        width, 
-        height,
+        codec: 'avc1.42E01F',
+        width, height,
         bitrate: settings.bitrate,
         framerate: fps,
         latencyMode: 'quality',
       });
 
-      // --- 4. 餵入數據 ---
-      // 先處理音訊
+      // 4. Encode Audio (Process in chunks of 2048 frames for efficiency)
       const bufferLength = mixedAudioBuffer.length;
-      const step = 2048;
-      for (let offset = 0; offset < bufferLength; offset += step) {
+      const chunkSize = 2048;
+      for (let offset = 0; offset < bufferLength; offset += chunkSize) {
         if (abortController.current) break;
-        const currentLen = Math.min(step, bufferLength - offset);
-        const data = new Float32Array(currentLen * 2);
-        data.set(mixedAudioBuffer.getChannelData(0).subarray(offset, offset + currentLen), 0);
-        data.set(mixedAudioBuffer.getChannelData(1).subarray(offset, offset + currentLen), currentLen);
+        const currentChunkSize = Math.min(chunkSize, bufferLength - offset);
+        
+        // AudioData expects an interleaved or planar Float32Array
+        // We use planar for standard OfflineAudioContext output
+        const data = new Float32Array(currentChunkSize * 2);
+        data.set(mixedAudioBuffer.getChannelData(0).subarray(offset, offset + currentChunkSize), 0);
+        data.set(mixedAudioBuffer.getChannelData(1).subarray(offset, offset + currentChunkSize), currentChunkSize);
 
+        // Fix: Access AudioData via window to avoid "Cannot find name" error in environments with missing WebCodecs types
         const audioFrame = new (window as any).AudioData({
           format: 'f32-planar',
           sampleRate: sampleRate,
-          numberOfFrames: currentLen,
+          numberOfFrames: currentChunkSize,
           numberOfChannels: 2,
           timestamp: Math.round((offset / sampleRate) * 1000000),
           data: data,
@@ -172,7 +165,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         audioFrame.close();
       }
 
-      // 再處理影片渲染
+      // 5. Prepare Canvas and Video Cache
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
@@ -186,12 +179,19 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         v.crossOrigin = "anonymous";
         v.muted = true;
         v.preload = "auto";
-        await new Promise(r => { v.onloadedmetadata = () => { v.currentTime = 0.001; r(null); }; });
+        await new Promise(r => { 
+          v.onloadedmetadata = () => {
+            v.currentTime = 0.001; 
+            r(null); 
+          }; 
+        });
         videoCache.set(clip.id, v);
       }
 
+      // 6. Rendering Loop (Visuals)
       for (let i = 0; i < totalFrames; i++) {
         if (abortController.current) break;
+
         const currentTime = i / fps;
         setProgress(Math.round((i / totalFrames) * 100));
 
@@ -205,30 +205,40 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         if (activeVideo) {
           const v = videoCache.get(activeVideo.id)!;
           const seekTime = (currentTime - activeVideo.startTime) + activeVideo.trimStart + 0.00001;
+          
           await new Promise<void>((resolve) => {
-            const onSeeked = () => {
+            const cleanup = () => {
               v.removeEventListener('seeked', onSeeked);
-              resolve();
+              requestAnimationFrame(() => resolve());
             };
+            const onSeeked = () => cleanup();
             v.addEventListener('seeked', onSeeked);
             v.currentTime = seekTime;
-            setTimeout(resolve, 500); 
+            setTimeout(cleanup, 300);
           });
 
           if (v.readyState >= 2) {
             ctx.save();
-            if (activeVideo.fx?.shakeEnabled) {
-              const fx = activeVideo.fx;
-              const t = currentTime * fx.shakeFrequency + fx.seed;
+            const fx = activeVideo.fx;
+            if (fx?.shakeEnabled) {
+              const freq = fx.shakeFrequency;
+              const int = fx.shakeIntensity;
+              const seed = fx.seed;
+              const t = currentTime * freq + seed;
+              const dx = Math.sin(t * 7.3) * int * 2;
+              const dy = Math.cos(t * 11.1) * int * 2;
+              const dr = Math.sin(t * 3.7) * 0.01 * int;
               ctx.translate(width / 2, height / 2);
               ctx.scale(fx.shakeZoom, fx.shakeZoom);
-              ctx.translate(-width / 2 + Math.sin(t * 7) * fx.shakeIntensity, -height / 2 + Math.cos(t * 11) * fx.shakeIntensity);
+              ctx.rotate(dr);
+              ctx.translate(-width / 2 + dx, -height / 2 + dy);
             }
             ctx.drawImage(v, 0, 0, width, height);
             ctx.restore();
           }
         }
 
+        // Text overlays
         const activeTexts = items.filter(t => 
           t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration
         );
@@ -242,35 +252,30 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.restore();
         }
 
+        // Note: VideoFrame might also require (window as any).VideoFrame depending on type environment
         const frame = new (window as any).VideoFrame(canvas, { timestamp: Math.round(i * (1000000 / fps)) });
         videoEncoder.encode(frame, { keyFrame: i % 30 === 0 });
         frame.close();
       }
 
-      // --- 5. 完成導出 ---
-      await Promise.all([videoEncoder.flush(), audioEncoder.flush()]);
+      // 7. Finalize Both Streams
+      await Promise.all([
+        videoEncoder.flush(),
+        audioEncoder.flush()
+      ]);
+      
       videoEncoder.close();
       audioEncoder.close();
 
-      // 在獲取 Buffer 之前確保文件結構已關閉
-      const finalBuffer = mp4boxFile.getBuffer();
-      if (!finalBuffer) throw new Error("生成失敗：數據緩衝區為空");
-
-      const blob = new Blob([finalBuffer], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${settings.filename}.mp4`;
-      a.click();
-      URL.revokeObjectURL(url);
-
+      mp4boxFile.save(`${settings.filename}.mp4`);
       setStatus('completed');
+
       videoCache.forEach(v => { v.src = ""; v.load(); });
 
     } catch (err: any) {
       console.error('Render Error:', err);
       setStatus('error');
-      setErrorMsg(err.message || '導出失敗');
+      setErrorMsg(err.message || 'Export failed.');
     }
   };
 
@@ -280,12 +285,12 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 text-zinc-100">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
       <div className="w-full max-w-md bg-[#1a1a1e] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
           <div className="flex items-center gap-3 text-indigo-400">
             <Video size={18} />
-            <h3 className="text-xs font-black uppercase tracking-widest">Final Rendering</h3>
+            <h3 className="text-xs font-black uppercase tracking-widest text-indigo-100">Pro Render (Video + Audio)</h3>
           </div>
           <button onClick={handleClose} className="text-zinc-500 hover:text-white transition-colors">
             <X size={20} />
@@ -296,80 +301,65 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           {status === 'idle' && (
             <>
               <div className="space-y-4">
-                <div className="p-4 bg-black/40 border border-zinc-800 rounded-lg">
-                  <p className="text-[10px] text-zinc-400 leading-relaxed">
-                    本工具使用 WebCodecs 技術直接在您的瀏覽器中編碼影片。<br/>
-                    <b>導出期間請勿關閉分頁。</b>
-                  </p>
-                </div>
                 <div>
-                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">影片名稱</label>
+                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">Filename</label>
                   <input 
                     type="text" 
                     value={settings.filename} 
                     onChange={e => setSettings({ ...settings, filename: e.target.value })}
-                    className="w-full bg-black/40 border border-zinc-800 rounded px-3 py-2 text-xs focus:outline-none"
+                    className="w-full bg-black/40 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">位元率 (Bitrate)</label>
+                  <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">Video Bitrate</label>
                   <select 
                     value={settings.bitrate}
                     onChange={e => setSettings({ ...settings, bitrate: parseInt(e.target.value) })}
-                    className="w-full bg-black/40 border border-zinc-800 rounded px-3 py-2 text-xs focus:outline-none"
+                    className="w-full bg-black/40 border border-zinc-800 rounded px-3 py-2 text-xs text-zinc-100 focus:outline-none"
                   >
-                    <option value={8000000}>8 Mbps (標準)</option>
-                    <option value={15000000}>15 Mbps (高畫質)</option>
-                    <option value={30000000}>30 Mbps (超清)</option>
+                    <option value={8000000}>8 Mbps</option>
+                    <option value={15000000}>15 Mbps</option>
                   </select>
                 </div>
               </div>
               <button 
                 onClick={handleStartRender}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs py-3 rounded-lg uppercase shadow-lg shadow-indigo-600/20"
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs py-3 rounded-lg uppercase"
               >
-                生成高品質 MP4
+                Render High Quality MP4
               </button>
             </>
           )}
 
           {status === 'rendering' && (
             <div className="py-8 flex flex-col items-center gap-6">
-              <div className="relative w-28 h-28 flex items-center justify-center">
+              <div className="relative w-24 h-24 flex items-center justify-center">
                 <svg className="w-full h-full transform -rotate-90">
-                  <circle cx="56" cy="56" r="48" stroke="currentColor" strokeWidth="6" fill="transparent" className="text-zinc-800" />
-                  <circle cx="56" cy="56" r="48" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray={301.6} strokeDashoffset={301.6 - (301.6 * progress) / 100} className="text-indigo-500 transition-all duration-300" />
+                  <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-800" />
+                  <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={251.2} strokeDashoffset={251.2 - (251.2 * progress) / 100} className="text-indigo-500 transition-all duration-300" />
                 </svg>
-                <div className="absolute flex flex-col items-center">
-                   <span className="text-2xl font-black">{progress}%</span>
-                   <span className="text-[8px] text-zinc-500 uppercase font-bold">Progress</span>
-                </div>
+                <span className="absolute text-xl font-black text-white">{progress}%</span>
               </div>
-              <div className="text-center space-y-2">
-                <Loader2 size={16} className="animate-spin text-indigo-400 mx-auto" />
-                <p className="text-[10px] font-black uppercase text-zinc-300">正在進行多線程編碼...</p>
+              <div className="text-center">
+                <Loader2 size={16} className="animate-spin text-indigo-400 mx-auto mb-2" />
+                <span className="text-[10px] font-black uppercase text-zinc-300">Encoding AV Stream...</span>
               </div>
             </div>
           )}
 
           {status === 'completed' && (
             <div className="py-8 flex flex-col items-center gap-6">
-              <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center border border-emerald-500/30">
-                <CheckCircle2 size={32} className="text-emerald-500" />
-              </div>
-              <h4 className="text-white font-black text-sm uppercase tracking-widest">導出成功</h4>
-              <button onClick={handleClose} className="w-full bg-zinc-800 text-white font-black text-xs py-3 rounded-lg uppercase">完成</button>
+              <CheckCircle2 size={40} className="text-emerald-500" />
+              <h4 className="text-white font-black text-sm uppercase">Success</h4>
+              <button onClick={handleClose} className="w-full bg-zinc-800 text-white font-black text-xs py-3 rounded-lg uppercase">Close</button>
             </div>
           )}
 
           {status === 'error' && (
-            <div className="py-8 flex flex-col items-center gap-6 text-center">
-              <AlertCircle size={48} className="text-rose-500" />
-              <div className="space-y-1">
-                <p className="text-[10px] text-rose-400 font-bold uppercase">渲染失敗</p>
-                <p className="text-[9px] text-zinc-500 max-w-[240px] leading-relaxed">{errorMsg}</p>
-              </div>
-              <button onClick={() => setStatus('idle')} className="w-full bg-indigo-600 text-white font-black text-xs py-3 rounded-lg uppercase">返回重試</button>
+            <div className="py-8 flex flex-col items-center gap-6">
+              <AlertCircle size={40} className="text-rose-500" />
+              <p className="text-[9px] text-rose-400 font-bold uppercase text-center">{errorMsg}</p>
+              <button onClick={() => setStatus('idle')} className="w-full bg-indigo-600 text-white font-black text-xs py-3 rounded-lg uppercase">Retry</button>
             </div>
           )}
         </div>
