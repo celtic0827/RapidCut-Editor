@@ -19,7 +19,6 @@ import { Timeline } from './Timeline.tsx';
 
 /**
  * [ARCHITECTURE: DOMAIN LOGIC]
- * 純粹的物理與數學運算
  */
 const TimelineUtils = {
   calculateSnap(time: number, items: TimelineItem[], excludeId: string | null, playheadTime: number, threshold: number): number {
@@ -45,30 +44,58 @@ const TimelineUtils = {
 
 /**
  * [ARCHITECTURE: DATA CONTROLLER]
- * 管理 Timeline 數據模型
  */
 function useTimeline(initialItems: TimelineItem[]) {
   const [items, setItems] = useState<TimelineItem[]>(initialItems);
-  const updateItem = useCallback((id: string, updates: Partial<TimelineItem>) => setItems(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i)), []);
-  const deleteItem = useCallback((id: string) => setItems(prev => prev.filter(i => i.id !== id)), []);
-  const addItem = useCallback((item: TimelineItem) => setItems(prev => [...prev, item]), []);
+  
+  const updateItem = useCallback((id: string, updates: Partial<TimelineItem>) => 
+    setItems(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i)), []);
+  
+  const deleteItem = useCallback((id: string) => 
+    setItems(prev => prev.filter(i => i.id !== id)), []);
+  
+  const addItem = useCallback((item: TimelineItem) => 
+    setItems(prev => [...prev, item]), []);
+  
   const splitItem = useCallback((id: string, time: number) => {
     setItems(prev => {
       const target = prev.find(i => i.id === id);
       if (!target || time <= target.startTime || time >= target.startTime + target.duration) return prev;
       const splitRel = time - target.startTime;
-      const newItem: TimelineItem = { ...target, id: Math.random().toString(), startTime: time, duration: target.duration - splitRel, trimStart: (target.trimStart || 0) + splitRel };
+      const newItem: TimelineItem = { 
+        ...target, 
+        id: Math.random().toString(), 
+        startTime: time, 
+        duration: target.duration - splitRel, 
+        trimStart: (target.trimStart || 0) + splitRel,
+        fx: target.fx ? { ...target.fx, seed: Math.floor(Math.random() * 100) } : undefined
+      };
       return [...prev.map(i => i.id === id ? { ...i, duration: splitRel } : i), newItem];
     });
   }, []);
-  return { items, setItems, updateItem, deleteItem, addItem, splitItem };
+
+  const autoArrange = useCallback(() => {
+    setItems(prev => {
+      let cursor = 0;
+      const videos = prev.filter(v => v.type === 'video').sort((a,b) => a.startTime - b.startTime);
+      const others = prev.filter(v => v.type !== 'video');
+      return [...videos.map(v => { const res = { ...v, startTime: cursor }; cursor += v.duration; return res; }), ...others];
+    });
+  }, []);
+
+  return { items, setItems, updateItem, deleteItem, addItem, splitItem, autoArrange };
 }
 
 /**
  * [ARCHITECTURE: PLAYBACK CONTROLLER]
- * 隔離播放、循環、媒體同步
  */
-function usePlayback(items: TimelineItem[], pxPerSec: number, videoRef: React.RefObject<HTMLVideoElement>, playheadRef: React.RefObject<HTMLDivElement>, timeDisplayRef: React.RefObject<HTMLSpanElement>) {
+function usePlayback(
+  items: TimelineItem[], 
+  pxPerSec: number, 
+  videoRef: React.RefObject<HTMLVideoElement>, 
+  playheadRef: React.RefObject<HTMLDivElement>, 
+  timeDisplayRef: React.RefObject<HTMLSpanElement>
+) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLooping, setIsLooping] = useState(false);
   const internalTimeRef = useRef(0);
@@ -95,7 +122,7 @@ function usePlayback(items: TimelineItem[], pxPerSec: number, videoRef: React.Re
         v.src = clip.url || '';
         v.onloadedmetadata = () => { v.currentTime = target; if (isPlaying) v.play().catch(()=>{}); };
       } else {
-        if (forceSeek || Math.abs(v.currentTime - target) > 0.15 || !isPlaying) v.currentTime = target;
+        if (forceSeek || Math.abs(v.currentTime - target) > 0.1 || !isPlaying) v.currentTime = target;
         if (isPlaying && v.paused) v.play().catch(()=>{});
       }
       v.style.opacity = '1';
@@ -129,21 +156,57 @@ function usePlayback(items: TimelineItem[], pxPerSec: number, videoRef: React.Re
   return { isPlaying, setIsPlaying, isLooping, setIsLooping, internalTime: internalTimeRef, seek };
 }
 
-/**
- * [ARCHITECTURE: INTERACTION CONTROLLER]
- * 隔離拖拽、磁吸計算、Scrubbing
- */
-function useInteraction(
-  setItems: React.Dispatch<React.SetStateAction<TimelineItem[]>>,
-  pxPerSec: number,
-  isMagnetEnabled: boolean,
-  internalTime: React.MutableRefObject<number>,
-  seek: (t: number) => void,
-  timelineRef: React.RefObject<HTMLDivElement>
-) {
+function RapidCutEditor() {
+  const [pxPerSec, setPxPerSec] = useState(15);
+  const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [projectSettings, setProjectSettings] = useState<ProjectSettings>({ width: 528, height: 768, fps: 30 });
+  
+  // Modal states
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showRenderModal, setShowRenderModal] = useState(false);
+  
+  // Library states
+  const [library, setLibrary] = useState<any[]>([]);
+  const [draggingAsset, setDraggingAsset] = useState<any | null>(null);
+  const [dragOverTime, setDragOverTime] = useState<number | null>(null);
+
+  // Refs
+  const playheadRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const timeDisplayRef = useRef<HTMLSpanElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const dragInfoRef = useRef<any>(null);
   const isScrubbingRef = useRef(false);
 
+  // 1. Data Controller
+  const { items, setItems, updateItem, deleteItem, addItem, splitItem, autoArrange } = useTimeline([
+    { id: 'v1', type: 'video', startTime: 0, duration: 8, trimStart: 0, originalDuration: 8, name: 'Sample_Clip', url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4', color: 'bg-zinc-700', fx: { shakeEnabled: true, shakeIntensity: 1.5, shakeFrequency: 1.0, shakeZoom: 1.05, seed: 42 } }
+  ]);
+
+  // 2. Playback Controller
+  const { isPlaying, setIsPlaying, isLooping, setIsLooping, internalTime, seek } = usePlayback(items, pxPerSec, videoRef, playheadRef, timeDisplayRef);
+
+  // 3. Helper: Import logic
+  const handleImport = async (files: FileList) => {
+    const imported = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('video/') && !file.type.startsWith('audio/')) continue;
+      const url = URL.createObjectURL(file);
+      const isAudio = file.type.startsWith('audio/');
+      const dur = await new Promise<number>(r => {
+        const el = document.createElement(isAudio ? 'audio' : 'video');
+        el.src = url; el.onloadedmetadata = () => r(el.duration);
+        el.onerror = () => r(5); // fallback
+      });
+      const asset = { name: file.name, url, duration: dur, type: isAudio ? 'audio' : 'video' };
+      setLibrary(prev => [...prev, asset]);
+      imported.push(asset);
+    }
+    return imported;
+  };
+
+  // 4. Interaction Events (Mouse)
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (isScrubbingRef.current && timelineRef.current) {
@@ -151,6 +214,7 @@ function useInteraction(
         seek(Math.max(0, (e.clientX - rect.left + timelineRef.current.scrollLeft) / pxPerSec));
         return;
       }
+      
       const info = dragInfoRef.current;
       if (!info) return;
 
@@ -193,51 +257,65 @@ function useInteraction(
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, [pxPerSec, isMagnetEnabled, setItems, seek]);
 
-  const startDrag = (e: React.MouseEvent, item: TimelineItem, type: any) => {
-    dragInfoRef.current = { id: item.id, type, initialX: e.clientX, initialStart: item.startTime, initialDur: item.duration, initialTrim: item.trimStart || 0 };
-  };
-  const startScrub = () => { isScrubbingRef.current = true; };
+  // 5. Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      
+      if (e.code === 'Space') { e.preventDefault(); setIsPlaying(p => !p); }
+      if (e.code === 'KeyS') { if (selectedItemId) splitItem(selectedItemId, internalTime.current); }
+      if (e.code === 'Delete' || e.code === 'Backspace') { if (selectedItemId) { deleteItem(selectedItemId); setSelectedItemId(null); } }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [selectedItemId, splitItem, deleteItem, setIsPlaying]);
 
-  return { startDrag, startScrub };
-}
-
-function RapidCutEditor() {
-  const [pxPerSec, setPxPerSec] = useState(15);
-  const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [projectSettings, setProjectSettings] = useState<ProjectSettings>({ width: 528, height: 768, fps: 30 });
-  
-  // Refs for Sync
-  const playheadRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const timeDisplayRef = useRef<HTMLSpanElement>(null);
-  const timelineRef = useRef<HTMLDivElement>(null);
-
-  // 模組 1: Data
-  const { items, setItems, updateItem, deleteItem, addItem, splitItem } = useTimeline([
-    { id: 'v1', type: 'video', startTime: 0, duration: 8, trimStart: 0, originalDuration: 8, name: 'Sample_Clip', url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4', color: 'bg-zinc-700', fx: { shakeEnabled: true, shakeIntensity: 1.5, shakeFrequency: 1.0, shakeZoom: 1.05, seed: 42 } }
-  ]);
-
-  // 模組 2: Playback
-  const { isPlaying, setIsPlaying, isLooping, setIsLooping, internalTime, seek } = usePlayback(items, pxPerSec, videoRef, playheadRef, timeDisplayRef);
-
-  // 模組 3: Interaction
-  const { startDrag, startScrub } = useInteraction(setItems, pxPerSec, isMagnetEnabled, internalTime, seek, timelineRef);
-
+  // Derived
   const projectDuration = useMemo(() => items.length === 0 ? 0 : Math.max(...items.map(i => i.startTime + i.duration)), [items]);
   const activeClip = useMemo(() => TimelineUtils.getClipAtTime(items, internalTime.current), [items, internalTime.current]);
+  const totalTimelineDuration = useMemo(() => Math.max(60, projectDuration + 30), [projectDuration]);
+
+  // Ruler rendering
+  const renderRuler = useMemo(() => {
+    const markers = [];
+    const step = pxPerSec < 10 ? 10 : pxPerSec < 30 ? 5 : 1;
+    for (let i = 0; i <= totalTimelineDuration; i += step) {
+      markers.push(
+        <div key={i} className="absolute top-0 border-l border-white/10 h-full" style={{ left: i * pxPerSec }}>
+          <span className="text-[7px] text-zinc-600 ml-1 mt-1 block">{Math.floor(i / 60)}:{(i % 60).toString().padStart(2, '0')}</span>
+        </div>
+      );
+    }
+    return markers;
+  }, [totalTimelineDuration, pxPerSec]);
 
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
-      <ProjectSettingsModal isOpen={false} onClose={() => {}} settings={projectSettings} setSettings={setProjectSettings} />
-      <Header onSettingsClick={() => {}} onBrandClick={() => setSelectedItemId(null)} onRenderClick={() => {}} timeDisplayRef={timeDisplayRef} projectDuration={projectDuration} />
+      <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
+      <RenderModal isOpen={showRenderModal} onClose={() => setShowRenderModal(false)} items={items} projectSettings={projectSettings} projectDuration={projectDuration} />
+      
+      <Header 
+        onSettingsClick={() => setShowSettingsModal(true)} 
+        onBrandClick={() => setSelectedItemId(null)} 
+        onRenderClick={() => setShowRenderModal(true)} 
+        timeDisplayRef={timeDisplayRef} 
+        projectDuration={projectDuration} 
+      />
       
       <main className="flex-1 flex overflow-hidden min-h-0">
-        <MediaBin library={[]} onImport={()=>{}} onAddFromLibrary={(a)=>addItem({...a, id: Math.random().toString(), startTime: internalTime.current, trimStart: 0})} onDragStart={()=>{}} />
+        <MediaBin 
+          library={library} 
+          onImport={handleImport} 
+          onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), type: a.type, startTime: internalTime.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600' })} 
+          onDragStart={setDraggingAsset} 
+        />
+        
         <StylePalette presets={[]} onApplyPreset={()=>{}} />
+        
         <div className="flex-1 flex flex-col bg-black relative overflow-hidden min-h-0">
           <PreviewPlayer videoRef={videoRef} items={items} currentTime={internalTime.current} projectDuration={projectDuration} projectSettings={projectSettings} activeClip={activeClip} isPlaying={isPlaying} />
         </div>
+        
         <Inspector activeItem={items.find(i => i.id === selectedItemId)} onUpdateItem={updateItem} onDeleteItem={deleteItem} onSavePreset={()=>{}} />
       </main>
 
@@ -245,18 +323,30 @@ function RapidCutEditor() {
         items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} 
         selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId}
         isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled}
-        projectDuration={projectDuration} totalTimelineDuration={Math.max(60, projectDuration + 30)}
-        onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTime.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: 'bg-zinc-700' })}
+        projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration}
+        onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTime.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600' })}
         onSplit={() => selectedItemId && splitItem(selectedItemId, internalTime.current)}
+        onAutoArrange={autoArrange}
         isPlaying={isPlaying} setIsPlaying={setIsPlaying}
         onJumpToStart={() => seek(0)}
         onJumpToEnd={() => seek(projectDuration)}
         isLooping={isLooping} setIsLooping={setIsLooping}
-        onMouseDown={startScrub}
-        onStartDrag={startDrag}
-        timelineRef={timelineRef} playheadRef={playheadRef}
-        draggingAsset={null} dragOverTime={null} onDragUpdate={()=>{}}
-        onAutoArrange={()=>{}} onDropFromLibrary={()=>{}} onDropExternalFiles={()=>{}} renderRuler={[]}
+        onMouseDown={() => { isScrubbingRef.current = true; setIsPlaying(false); }}
+        onStartDrag={(e, item, type) => { dragInfoRef.current = { id: item.id, type, initialX: e.clientX, initialStart: item.startTime, initialDur: item.duration, initialTrim: item.trimStart || 0 }; }}
+        renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef}
+        draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime}
+        onDropFromLibrary={(a, t) => {
+          addItem({ id: Math.random().toString(), type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600' });
+          setDraggingAsset(null); setDragOverTime(null);
+        }}
+        onDropExternalFiles={async (f, t) => {
+          const assets = await handleImport(f);
+          let cursor = t;
+          assets.forEach(a => {
+            addItem({ id: Math.random().toString(), type: a.type, startTime: cursor, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600' });
+            cursor += a.duration;
+          });
+        }}
       />
     </div>
   );
