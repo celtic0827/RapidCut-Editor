@@ -1,18 +1,22 @@
 
 import React, { useRef, useState } from 'react';
 import { Plus, UploadCloud, Library, FileVideo } from 'lucide-react';
+// Added TrackType import to define correct asset type
+import { TrackType } from './types.ts';
 
 interface MediaAsset {
   name: string;
   url: string;
   duration: number;
+  // Added type property to match Timeline requirements
+  type: TrackType;
 }
 
 interface MediaBinProps {
   library: MediaAsset[];
   onImport: (files: FileList) => void;
   onAddFromLibrary: (asset: MediaAsset) => void;
-  onDragStart: (asset: any) => void;
+  onDragStart: (asset: MediaAsset) => void;
 }
 
 export const MediaBin = ({ library, onImport, onAddFromLibrary, onDragStart }: MediaBinProps) => {

@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat } from 'lucide-react';
 import { TimelineItem, TrackType } from './types.ts';
@@ -35,7 +36,8 @@ interface TimelineProps {
   timelineRef: React.RefObject<HTMLDivElement>;
   onDropFromLibrary: (asset: { name: string, url: string, duration: number, type: TrackType }, startTime: number) => void;
   onDropExternalFiles: (files: FileList, startTime: number) => void;
-  draggingAsset: {name: string, url: string, duration: number} | null;
+  // Updated draggingAsset type to include TrackType
+  draggingAsset: {name: string, url: string, duration: number, type: TrackType} | null;
   dragOverTime: number | null;
   onDragUpdate: (t: number) => void;
 }
@@ -203,7 +205,8 @@ export const Timeline = ({
                   <TimelineClip 
                     item={{
                       id: 'ghost',
-                      type: 'video',
+                      // Use the dragging asset's actual type instead of hardcoded 'video'
+                      type: draggingAsset.type,
                       startTime: dragOverTime,
                       duration: draggingAsset.duration,
                       trimStart: 0,
