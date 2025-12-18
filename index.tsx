@@ -34,13 +34,15 @@ function RapidCutEditor() {
   ]);
   const [library, setLibrary] = useState<{name: string, url: string, duration: number}[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [shakeIntensity, setShakeIntensity] = useState(1.2);
+  
+  // Handheld FX States
   const [isShakeEnabled, setIsShakeEnabled] = useState(true);
-  const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
+  const [shakeIntensity, setShakeIntensity] = useState(1.5); 
+  const [shakeFrequency, setShakeFrequency] = useState(1.0); 
+  const [shakeSeed, setShakeSeed] = useState(1); 
+  const [shakeZoom, setShakeZoom] = useState(1.05); 
 
-  // Ghost states for drag-and-drop from library
-  const [draggingAsset, setDraggingAsset] = useState<{name: string, url: string, duration: number} | null>(null);
-  const [dragOverTime, setDragOverTime] = useState<number | null>(null);
+  const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
 
   const playheadRef = useRef<HTMLDivElement>(null);
   const timeDisplayRef = useRef<HTMLSpanElement>(null);
@@ -53,12 +55,53 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const dragInfo = useRef<{ id: string; type: DragType; initialX: number; initialStartTime: number; initialDuration: number; initialTrimStart: number; } | null>(null);
 
+  // Ghost states for drag-and-drop from library
+  const [draggingAsset, setDraggingAsset] = useState<{name: string, url: string, duration: number} | null>(null);
+  const [dragOverTime, setDragOverTime] = useState<number | null>(null);
+
   const projectDuration = useMemo(() => items.length === 0 ? 0 : Math.max(...items.map(i => i.startTime + i.duration)), [items]);
   
-  // Dynamic Timeline Total Length
   const totalTimelineDuration = useMemo(() => {
     return Math.min(MAX_VIDEO_DURATION, Math.max(MIN_TIMELINE_DURATION, projectDuration + TIMELINE_BUFFER_SECONDS));
   }, [projectDuration]);
+
+  const syncMedia = useCallback((t: number, forceSeek = false) => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const activeVideo = items.find(i => i.type === 'video' && t >= i.startTime && t < i.startTime + i.duration);
+
+    if (activeVideo) {
+      const targetSeekTime = (t - activeVideo.startTime) + activeVideo.trimStart;
+      const currentSrc = v.getAttribute('src') || '';
+      const targetSrc = activeVideo.url || '';
+      
+      if (currentClipIdRef.current !== activeVideo.id || currentSrc !== targetSrc) {
+        currentClipIdRef.current = activeVideo.id;
+        v.src = targetSrc;
+        
+        const onReady = () => {
+          v.currentTime = targetSeekTime;
+          if (isPlaying && !isScrubbingRef.current) v.play().catch(() => {});
+          v.onloadedmetadata = null;
+        };
+        v.onloadedmetadata = onReady;
+      } else {
+        const drift = Math.abs(v.currentTime - targetSeekTime);
+        if (forceSeek || drift > 0.15 || !isPlaying) {
+          v.currentTime = targetSeekTime;
+        }
+        if (isPlaying && v.paused && !isScrubbingRef.current) {
+          v.play().catch(() => {});
+        }
+      }
+      v.style.opacity = '1';
+    } else {
+      currentClipIdRef.current = null;
+      v.pause();
+      v.style.opacity = '0'; 
+    }
+  }, [items, isPlaying]);
 
   const updateUI = useCallback((t: number) => {
     internalTimeRef.current = t;
@@ -71,20 +114,35 @@ function RapidCutEditor() {
     }
   }, [pxPerSec]);
 
-  // Keyboard controls
+  // Exclusive Keyboard Space Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
-      
-      if (e.code === 'Space' && !isTyping) {
-        e.preventDefault();
-        setIsPlaying(prev => !prev);
+      if (e.code === 'Space') {
+        const target = e.target as HTMLElement;
+        const isTyping = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+
+        if (!isTyping) {
+          // 1. Prevent scroll and other browser defaults
+          e.preventDefault();
+          e.stopPropagation();
+          
+          // 2. Force blur any focused element (like buttons) to prevent double-triggering
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+
+          // 3. Toggle Playback
+          setIsPlaying(prev => !prev);
+        }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    // Capture phase to ensure we catch it before other elements
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, []);
 
   const getSnappedTime = useCallback((rawTime: number, excludeId: string | null = null) => {
@@ -106,38 +164,6 @@ function RapidCutEditor() {
     return closest;
   }, [items, isMagnetEnabled, pxPerSec]);
 
-  const syncMedia = useCallback((t: number, forceSeek = false) => {
-    if (!videoRef.current) return;
-    const v = videoRef.current;
-    const activeVideo = items.find(i => i.type === 'video' && t >= i.startTime && t <= i.startTime + i.duration);
-    
-    if (activeVideo) {
-      const targetSeekTime = (t - activeVideo.startTime) + activeVideo.trimStart;
-      if (currentClipIdRef.current !== activeVideo.id) {
-        currentClipIdRef.current = activeVideo.id;
-        v.src = activeVideo.url!;
-        v.load();
-        v.currentTime = targetSeekTime;
-        if (isPlaying && !isScrubbingRef.current) v.play().catch(() => {});
-      } else {
-        const clamped = activeVideo.originalDuration ? Math.min(targetSeekTime, activeVideo.originalDuration - 0.01) : targetSeekTime;
-        if (forceSeek || Math.abs(v.currentTime - clamped) > 0.3) v.currentTime = clamped;
-        if (activeVideo.originalDuration && targetSeekTime >= activeVideo.originalDuration) {
-          if (!v.paused) v.pause();
-        } else if (isPlaying && v.paused && !isScrubbingRef.current) {
-          v.play().catch(() => {});
-        }
-      }
-    } else {
-      currentClipIdRef.current = null;
-      if (v.src !== '') {
-        v.pause();
-        v.src = '';
-        v.load();
-      }
-    }
-  }, [items, isPlaying]);
-
   useEffect(() => {
     syncMedia(internalTimeRef.current, true);
   }, [items, syncMedia]);
@@ -149,27 +175,25 @@ function RapidCutEditor() {
 
     if (isPlaying && !isScrubbingRef.current) {
       let t = internalTimeRef.current + delta;
-      if (videoRef.current && currentClipIdRef.current) {
-        const activeClip = items.find(i => i.id === currentClipIdRef.current);
-        if (activeClip && !videoRef.current.paused && !videoRef.current.seeking) {
-           if (activeClip.originalDuration && (t - activeClip.startTime + activeClip.trimStart) < activeClip.originalDuration) {
-              t = activeClip.startTime + (videoRef.current.currentTime - activeClip.trimStart);
-           }
-        }
-      }
       if (t >= projectDuration) {
-        if (isLooping) { t = 0; syncMedia(0, true); }
-        else { t = projectDuration; setIsPlaying(false); syncMedia(t, true); }
+        if (isLooping) { t = 0; }
+        else { t = projectDuration; setIsPlaying(false); }
       }
-      if (t >= MAX_VIDEO_DURATION) { setIsPlaying(false); t = 0; syncMedia(0, true); }
+      if (t >= MAX_VIDEO_DURATION) { setIsPlaying(false); t = 0; }
       updateUI(t);
+      syncMedia(t);
       requestRef.current = requestAnimationFrame(animate);
     }
-  }, [isPlaying, updateUI, syncMedia, items, projectDuration, isLooping]);
+  }, [isPlaying, updateUI, syncMedia, projectDuration, isLooping]);
 
   useEffect(() => {
-    if (isPlaying) { lastUpdateRef.current = performance.now(); requestRef.current = requestAnimationFrame(animate); }
-    else { if (requestRef.current) cancelAnimationFrame(requestRef.current); videoRef.current?.pause(); }
+    if (isPlaying) { 
+      lastUpdateRef.current = performance.now(); 
+      requestRef.current = requestAnimationFrame(animate); 
+    } else { 
+      if (requestRef.current) cancelAnimationFrame(requestRef.current); 
+      videoRef.current?.pause(); 
+    }
     return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
   }, [isPlaying, animate]);
 
@@ -186,7 +210,6 @@ function RapidCutEditor() {
       const idx = prev.findIndex(i => i.id === targetId);
       const item = prev[idx];
       if (!item || t <= item.startTime || t >= item.startTime + item.duration) return prev;
-      
       const splitPoint = t - item.startTime;
       const first = { ...item, duration: splitPoint };
       const second: TimelineItem = { 
@@ -197,7 +220,6 @@ function RapidCutEditor() {
         trimStart: item.trimStart + splitPoint,
         name: `${item.name}_part2` 
       };
-      
       const next = [...prev];
       next.splice(idx, 1, first, second);
       return next;
@@ -208,14 +230,12 @@ function RapidCutEditor() {
     setItems(prev => {
       const videos = prev.filter(i => i.type === 'video').sort((a, b) => a.startTime - b.startTime);
       const others = prev.filter(i => i.type !== 'video');
-      
       let currentTime = 0;
       const arrangedVideos = videos.map(v => {
         const updated = { ...v, startTime: currentTime };
         currentTime += v.duration;
         return updated;
       });
-      
       return [...arrangedVideos, ...others];
     });
   }, []);
@@ -264,7 +284,6 @@ function RapidCutEditor() {
       } else if (dragInfo.current) {
         const info = dragInfo.current;
         const deltaTime = (e.clientX - info.initialX) / pxPerSec;
-        
         setItems(prev => {
           const snapThresholdTime = 12 / pxPerSec;
           const snapPoints: number[] = [0, internalTimeRef.current];
@@ -274,14 +293,12 @@ function RapidCutEditor() {
               snapPoints.push(i.startTime + i.duration);
             }
           });
-
           return prev.map(item => {
             if (item.id === info.id) {
               if (info.type === 'move') {
                 const rawNextStart = Math.max(0, info.initialStartTime + deltaTime);
                 const rawNextEnd = rawNextStart + item.duration;
                 if (!isMagnetEnabled) return { ...item, startTime: rawNextStart };
-
                 let bestStart = rawNextStart;
                 let minDelta = snapThresholdTime;
                 for (const p of snapPoints) {
@@ -350,7 +367,6 @@ function RapidCutEditor() {
   const renderRuler = useMemo(() => {
     const res = [];
     let step = pxPerSec < 6 ? 60 : pxPerSec < 12 ? 30 : 10;
-    // Optimized: Only render ruler markers up to dynamic total duration
     for (let i = 0; i <= totalTimelineDuration; i += step) {
       const isMin = i % 60 === 0;
       res.push(<div key={i} className="absolute flex flex-col" style={{ left: i * pxPerSec }}><div className={`w-[1px] bg-zinc-700 mb-1 ${isMin ? 'h-3 bg-zinc-500' : 'h-2'}`} />{(isMin || pxPerSec > 10) && <span className={`text-[7px] font-mono leading-none ${isMin ? 'text-zinc-400 font-bold' : 'text-zinc-600'}`}>{Math.floor(i / 60)}:{(i % 60).toString().padStart(2, '0')}</span>}</div>);
@@ -381,6 +397,8 @@ function RapidCutEditor() {
      setDragOverTime(getSnappedTime(t));
   }, [getSnappedTime]);
 
+  const shakeAnimationDelay = useMemo(() => `${-shakeSeed * 0.4}s`, [shakeSeed]);
+
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
@@ -393,7 +411,13 @@ function RapidCutEditor() {
           onDragStart={setDraggingAsset}
         />
         <div className="flex-1 flex flex-col bg-black relative overflow-hidden min-h-0">
-          <PreviewPlayer videoRef={videoRef} items={items} currentTime={internalTimeRef.current} projectDuration={projectDuration} projectSettings={projectSettings} isShakeEnabled={isShakeEnabled} shakeIntensity={shakeIntensity} isPlaying={isPlaying} />
+          <PreviewPlayer 
+            videoRef={videoRef} items={items} currentTime={internalTimeRef.current} 
+            projectDuration={projectDuration} projectSettings={projectSettings} 
+            isShakeEnabled={isShakeEnabled} isPlaying={isPlaying}
+            shakeIntensity={shakeIntensity} shakeFrequency={shakeFrequency} 
+            shakeZoom={shakeZoom} shakeAnimationDelay={shakeAnimationDelay}
+          />
         </div>
         <Inspector 
           activeItem={items.find(i => i.id === selectedItemId)} 
@@ -401,6 +425,9 @@ function RapidCutEditor() {
           onDeleteItem={(id) => { setItems(p => p.filter(i => i.id !== id)); setSelectedItemId(null); }}
           isShakeEnabled={isShakeEnabled} setIsShakeEnabled={setIsShakeEnabled}
           shakeIntensity={shakeIntensity} setShakeIntensity={setShakeIntensity}
+          shakeFrequency={shakeFrequency} setShakeFrequency={setShakeFrequency}
+          shakeSeed={shakeSeed} setShakeSeed={setShakeSeed}
+          shakeZoom={shakeZoom} setShakeZoom={setShakeZoom}
         />
       </main>
       <Timeline 
@@ -427,11 +454,20 @@ function RapidCutEditor() {
         onDragUpdate={handleDragUpdateInTimeline}
       />
       <style>{`
-        @keyframes handheld { 0% { transform: translate3d(0,0,0); } 25% { transform: translate3d(calc(0.6px * var(--shake-intensity)), calc(-0.4px * var(--shake-intensity)), 0) rotate(0.02deg); } 50% { transform: translate3d(calc(-0.4px * var(--shake-intensity)), calc(0.8px * var(--shake-intensity)), 0) rotate(-0.02deg); } 100% { transform: translate3d(0,0,0); } }
-        .animate-handheld { animation: handheld 0.9s infinite ease-in-out; }
+        @keyframes handheld-v2 {
+          0% { transform: translate3d(0,0,0) rotate(0deg); }
+          20% { transform: translate3d(calc(1.2px * var(--shake-intensity)), calc(-1.8px * var(--shake-intensity)), 0) rotate(0.12deg); }
+          40% { transform: translate3d(calc(-1.5px * var(--shake-intensity)), calc(1.2px * var(--shake-intensity)), 0) rotate(-0.08deg); }
+          60% { transform: translate3d(calc(1.8px * var(--shake-intensity)), calc(0.9px * var(--shake-intensity)), 0) rotate(0.15deg); }
+          80% { transform: translate3d(calc(-0.9px * var(--shake-intensity)), calc(-1.5px * var(--shake-intensity)), 0) rotate(-0.1deg); }
+          100% { transform: translate3d(0,0,0) rotate(0deg); }
+        }
+        .animate-handheld-v2 { 
+          animation: handheld-v2 calc(1.5s / var(--shake-frequency)) infinite cubic-bezier(0.45, 0.05, 0.55, 0.95);
+          animation-delay: var(--shake-delay);
+        }
         .animate-reveal { animation: reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
         @keyframes reveal { 0% { opacity: 0; transform: translateY(10px); filter: blur(4px); } 100% { opacity: 1; transform: translateY(0); filter: blur(0); } }
-        /* Updated local scrollbars for internal timeline: 3x width (12px), 2x height (8px), min-width 100px */
         .scrollbar-thin::-webkit-scrollbar { width: 12px; height: 8px; }
         .scrollbar-thin::-webkit-scrollbar-thumb { 
           background: #333; 

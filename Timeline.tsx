@@ -82,20 +82,23 @@ export const Timeline = ({
     { label: 'A1', height: LANE_HEIGHT_AUDIO }
   ];
 
+  const handleAction = (callback: () => void) => (e: React.MouseEvent) => {
+    callback();
+    (e.currentTarget as HTMLElement).blur();
+  };
+
   return (
     <footer className="h-auto bg-[#1a1a1e] flex flex-col border-t border-black shrink-0 relative z-20 pb-safe">
       <div className="h-8 border-b border-black flex items-center justify-between px-3 bg-[#151518]">
-        {/* Left: Track Management */}
         <div className="flex gap-4 w-1/5">
-          <button onClick={() => onAddItem('video')} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Video</button>
-          <button onClick={() => onAddItem('text')} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Text</button>
+          <button onClick={handleAction(() => onAddItem('video'))} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Video</button>
+          <button onClick={handleAction(() => onAddItem('text'))} className="flex items-center gap-1.5 text-zinc-500 hover:text-white font-black text-[9px] uppercase transition-colors"><Plus size={10} /> Text</button>
         </div>
         
-        {/* Center area: Edit tools & Playback controls */}
         <div className="flex-1 flex items-center justify-center gap-6">
           <div className="flex items-center bg-black/40 rounded px-1 h-6">
             <button 
-              onClick={onSplit}
+              onClick={handleAction(onSplit)}
               className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all rounded-l-sm border-r border-white/5"
               title="Split Clip (S)"
             >
@@ -103,7 +106,7 @@ export const Timeline = ({
               <span className="text-[9px] font-black uppercase tracking-tighter">Split</span>
             </button>
             <button 
-              onClick={onAutoArrange}
+              onClick={handleAction(onAutoArrange)}
               className="flex items-center gap-1.5 px-3 py-1 text-zinc-400 hover:text-white hover:bg-white/5 transition-all border-r border-white/5"
               title="Auto Arrange Sequence"
             >
@@ -111,7 +114,7 @@ export const Timeline = ({
               <span className="text-[9px] font-black uppercase tracking-tighter">Arrange</span>
             </button>
             <button 
-              onClick={() => setIsMagnetEnabled(!isMagnetEnabled)} 
+              onClick={handleAction(() => setIsMagnetEnabled(!isMagnetEnabled))} 
               className={`px-3 py-1 flex items-center gap-1.5 transition-all rounded-r-sm ${isMagnetEnabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
               title="Toggle Magnet Snap"
             >
@@ -121,14 +124,14 @@ export const Timeline = ({
           </div>
 
           <div className="flex items-center gap-1 bg-black/40 rounded px-1.5 h-6">
-            <button onClick={onJumpToStart} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipBack size={12} fill="currentColor" /></button>
-            <button onClick={() => setIsPlaying(!isPlaying)} className="w-5 h-5 flex items-center justify-center rounded-full bg-zinc-200 text-black hover:bg-white transition-all">
+            <button onClick={handleAction(onJumpToStart)} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipBack size={12} fill="currentColor" /></button>
+            <button onClick={handleAction(() => setIsPlaying(!isPlaying))} className="w-5 h-5 flex items-center justify-center rounded-full bg-zinc-200 text-black hover:bg-white transition-all">
               {isPlaying ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" className="ml-0.5" />}
             </button>
-            <button onClick={onJumpToEnd} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipForward size={12} fill="currentColor" /></button>
+            <button onClick={handleAction(onJumpToEnd)} className="p-1 text-zinc-500 hover:text-white transition-colors"><SkipForward size={12} fill="currentColor" /></button>
             <div className="w-[1px] h-3 bg-white/10 mx-1" />
             <button 
-              onClick={() => setIsLooping(!isLooping)} 
+              onClick={handleAction(() => setIsLooping(!isLooping))} 
               className={`p-1 rounded transition-all ${isLooping ? 'text-indigo-400' : 'text-zinc-600 hover:text-zinc-400'}`}
               title="Toggle Loop"
             >
@@ -137,16 +140,16 @@ export const Timeline = ({
           </div>
         </div>
 
-        {/* Right: Viewport Controls */}
         <div className="flex items-center justify-end gap-3 w-1/5">
           <div className="flex items-center gap-2 bg-black/20 px-2 rounded h-5">
-            <ZoomOut size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.max(4, p * 0.8))} />
+            <ZoomOut size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={handleAction(() => setPxPerSec(p => Math.max(4, p * 0.8)))} />
             <input 
               type="range" min={4} max={60} step="0.1" value={pxPerSec} 
               onChange={(e) => setPxPerSec(parseFloat(e.target.value))}
+              onMouseUp={(e) => (e.currentTarget as HTMLElement).blur()}
               className="w-16 h-1 bg-zinc-800 appearance-none rounded-full accent-indigo-500 cursor-pointer"
             />
-            <ZoomIn size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={() => setPxPerSec(p => Math.min(60, p * 1.2))} />
+            <ZoomIn size={10} className="text-zinc-600 cursor-pointer hover:text-zinc-400" onClick={handleAction(() => setPxPerSec(p => Math.min(60, p * 1.2)))} />
           </div>
         </div>
       </div>
@@ -166,7 +169,6 @@ export const Timeline = ({
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
-          {/* Dynamic Width Container */}
           <div className="h-full relative" style={{ width: totalTimelineDuration * pxPerSec + 100 }}>
             <div style={{ height: `${RULER_HEIGHT}px` }} className="w-full border-b border-white/5 relative bg-black/5 cursor-crosshair shrink-0">
               {renderRuler}

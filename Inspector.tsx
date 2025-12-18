@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Trash2, Monitor } from 'lucide-react';
+import { Trash2, Monitor, Waves, Zap, Hash, Scaling } from 'lucide-react';
 import { TimelineItem } from './types';
 
 interface InspectorProps {
@@ -11,11 +11,21 @@ interface InspectorProps {
   setIsShakeEnabled: (val: boolean) => void;
   shakeIntensity: number;
   setShakeIntensity: (val: number) => void;
+  shakeFrequency: number;
+  setShakeFrequency: (val: number) => void;
+  shakeSeed: number;
+  setShakeSeed: (val: number) => void;
+  shakeZoom: number;
+  setShakeZoom: (val: number) => void;
 }
 
 export const Inspector = ({ 
   activeItem, onUpdateItem, onDeleteItem, 
-  isShakeEnabled, setIsShakeEnabled, shakeIntensity, setShakeIntensity 
+  isShakeEnabled, setIsShakeEnabled, 
+  shakeIntensity, setShakeIntensity,
+  shakeFrequency, setShakeFrequency,
+  shakeSeed, setShakeSeed,
+  shakeZoom, setShakeZoom
 }: InspectorProps) => (
   <aside className="w-60 border-l border-black bg-[#111114] flex flex-col shrink-0 overflow-hidden">
     <div className="h-8 flex items-center px-3 border-b border-black bg-[#1a1a1e]">
@@ -71,12 +81,75 @@ export const Inspector = ({
         </div>
       )}
 
-      <div className="pt-4 border-t border-zinc-900">
-        <div className="flex items-center justify-between mb-3 text-[9px] font-black text-zinc-600 uppercase">
+      {/* Global Handheld FX Controls */}
+      <div className="pt-4 border-t border-zinc-900 space-y-5">
+        <div className="flex items-center justify-between text-[9px] font-black text-indigo-400 uppercase tracking-widest">
           <span>Handheld FX</span>
-          <input type="checkbox" checked={isShakeEnabled} onChange={e => setIsShakeEnabled(e.target.checked)} className="accent-indigo-500 w-3 h-3 cursor-pointer" />
+          <input 
+            type="checkbox" 
+            checked={isShakeEnabled} 
+            onChange={e => setIsShakeEnabled(e.target.checked)} 
+            className="accent-indigo-500 w-3 h-3 cursor-pointer" 
+          />
         </div>
-        <input type="range" min="0" max="5" step="0.1" value={shakeIntensity} onChange={(e) => setShakeIntensity(parseFloat(e.target.value))} className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500" />
+
+        <div className={`space-y-4 transition-opacity ${isShakeEnabled ? 'opacity-100' : 'opacity-30 pointer-events-none'}`}>
+          {/* Intensity / Distance */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center text-[8px] font-black text-zinc-600 uppercase">
+              <div className="flex items-center gap-1.5"><Waves size={10}/> Max Distance</div>
+              <span className="text-indigo-400 font-mono">{shakeIntensity.toFixed(1)}px</span>
+            </div>
+            <input 
+              type="range" min="0" max="8" step="0.1" 
+              value={shakeIntensity} 
+              onChange={(e) => setShakeIntensity(parseFloat(e.target.value))} 
+              className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500" 
+            />
+          </div>
+
+          {/* Frequency / Speed */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center text-[8px] font-black text-zinc-600 uppercase">
+              <div className="flex items-center gap-1.5"><Zap size={10}/> Speed Multiplier</div>
+              <span className="text-indigo-400 font-mono">x{shakeFrequency.toFixed(1)}</span>
+            </div>
+            <input 
+              type="range" min="0.1" max="4" step="0.1" 
+              value={shakeFrequency} 
+              onChange={(e) => setShakeFrequency(parseFloat(e.target.value))} 
+              className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500" 
+            />
+          </div>
+
+          {/* Random Seed */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center text-[8px] font-black text-zinc-600 uppercase">
+              <div className="flex items-center gap-1.5"><Hash size={10}/> Random Seed</div>
+              <span className="text-indigo-400 font-mono">{shakeSeed}</span>
+            </div>
+            <input 
+              type="range" min="1" max="10" step="1" 
+              value={shakeSeed} 
+              onChange={(e) => setShakeSeed(parseInt(e.target.value))} 
+              className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500" 
+            />
+          </div>
+
+          {/* Zoom / Scale */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center text-[8px] font-black text-zinc-600 uppercase">
+              <div className="flex items-center gap-1.5"><Scaling size={10}/> Safe Zoom</div>
+              <span className="text-indigo-400 font-mono">{(shakeZoom * 100).toFixed(0)}%</span>
+            </div>
+            <input 
+              type="range" min="1.0" max="1.3" step="0.01" 
+              value={shakeZoom} 
+              onChange={(e) => setShakeZoom(parseFloat(e.target.value))} 
+              className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500" 
+            />
+          </div>
+        </div>
       </div>
     </div>
   </aside>
