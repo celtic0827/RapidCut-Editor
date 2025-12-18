@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RapidCut Editor</title>
+  <!-- 移除 crossorigin 以相容 credentialless 安全策略 -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script type="importmap">
 {
@@ -15,34 +16,36 @@
     "mp4box": "https://esm.sh/mp4box@0.5.2",
     "@ffmpeg/ffmpeg": "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
     "@ffmpeg/util": "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
   <style>
-    body {
+    /* 基礎佈局補丁：確保在 Tailwind 載入失敗時不會看到純白畫面或錯亂佈局 */
+    * { box-sizing: border-box; }
+    body, html {
       margin: 0;
       padding: 0;
-      background-color: #0f0f12;
+      width: 100%;
+      height: 100%;
+      background-color: #0d0d0f; /* 強制深色背景 */
+      color: #a1a1aa;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       overflow: hidden;
     }
-    ::-webkit-scrollbar {
-      width: 18px;
-      height: 12px;
+    #root {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-color: #0d0d0f;
     }
-    ::-webkit-scrollbar-track {
-      background: #15151a;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #3f3f46;
-      border-radius: 4px;
-      border: 3px solid #15151a;
-      min-width: 100px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #52525b;
-    }
+    /* 滾動條美化 */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #15151a; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; border: 2px solid #15151a; }
+    ::-webkit-scrollbar-thumb:hover { background: #52525b; }
   </style>
 </head>
 <body>
