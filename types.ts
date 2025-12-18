@@ -7,6 +7,7 @@ export interface TimelineItem {
   type: TrackType;
   startTime: number;
   duration: number;
+  trimStart: number; // Seconds cut from the beginning of the source media
   originalDuration?: number; // The actual file duration
   allowExtension?: boolean;  // Whether the user can drag past originalDuration
   name: string;

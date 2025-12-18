@@ -12,16 +12,32 @@ interface MediaBinProps {
   library: MediaAsset[];
   onImport: (files: FileList) => void;
   onAddFromLibrary: (asset: MediaAsset) => void;
+  onDragStart: (asset: MediaAsset | null) => void;
 }
 
-export const MediaBin = ({ library, onImport, onAddFromLibrary }: MediaBinProps) => {
+export const MediaBin = ({ library, onImport, onAddFromLibrary, onDragStart }: MediaBinProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files) onImport(e.dataTransfer.files);
+    if (e.dataTransfer.files.length > 0) onImport(e.dataTransfer.files);
+  };
+
+  const handleAssetDragStart = (e: React.DragEvent, asset: MediaAsset) => {
+    e.dataTransfer.setData('application/json', JSON.stringify(asset));
+    e.dataTransfer.effectAllowed = 'copy';
+    onDragStart(asset);
+    
+    // Create a very small or invisible drag image so we can show our custom ghost in the timeline instead
+    const img = new Image();
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    e.dataTransfer.setDragImage(img, 0, 0);
+  };
+
+  const handleAssetDragEnd = () => {
+    onDragStart(null);
   };
 
   return (
@@ -56,10 +72,17 @@ export const MediaBin = ({ library, onImport, onAddFromLibrary }: MediaBinProps)
           </div>
         )}
         {library.map((asset, i) => (
-          <div key={i} onClick={() => onAddFromLibrary(asset)} className="group relative aspect-video bg-black rounded overflow-hidden cursor-pointer border border-zinc-800 hover:border-indigo-500 transition-all shadow-md">
-            <video src={asset.url} className="w-full h-full object-cover opacity-50 group-hover:opacity-100" />
-            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40"><Plus size={16} /></div>
-            <div className="absolute bottom-1 left-1 right-1 truncate text-[8px] bg-black/60 px-1 py-0.5 rounded font-bold uppercase backdrop-blur-sm">
+          <div 
+            key={i} 
+            draggable 
+            onDragStart={(e) => handleAssetDragStart(e, asset)}
+            onDragEnd={handleAssetDragEnd}
+            onClick={() => onAddFromLibrary(asset)} 
+            className="group relative aspect-video bg-black rounded overflow-hidden cursor-grab active:cursor-grabbing border border-zinc-800 hover:border-indigo-500 transition-all shadow-md"
+          >
+            <video src={asset.url} className="w-full h-full object-cover opacity-50 group-hover:opacity-100 pointer-events-none" />
+            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40 pointer-events-none"><Plus size={16} /></div>
+            <div className="absolute bottom-1 left-1 right-1 truncate text-[8px] bg-black/60 px-1 py-0.5 rounded font-bold uppercase backdrop-blur-sm pointer-events-none">
               {asset.name}
               <div className="text-[6px] opacity-60 tabular-nums">{(asset.duration).toFixed(2)}s</div>
             </div>

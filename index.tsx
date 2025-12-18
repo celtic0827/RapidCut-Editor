@@ -12,7 +12,9 @@ import { Inspector } from './Inspector';
 import { Timeline } from './Timeline';
 import { TransportControls } from './TransportControls';
 
-function QuickCutEditor() {
+type DragType = 'move' | 'trim-start' | 'trim-end';
+
+function RapidCutEditor() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [pxPerSec, setPxPerSec] = useState(15);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -21,14 +23,18 @@ function QuickCutEditor() {
     width: 528, height: 768, fps: 30
   });
   const [items, setItems] = useState<TimelineItem[]>([
-    { id: 'v1', type: 'video', startTime: 0, duration: 8, originalDuration: 8, allowExtension: false, name: 'Ferret_Christmas_Vibe', url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4', color: 'bg-zinc-700' },
-    { id: 't1', type: 'text', startTime: 1, duration: 4, name: 'Title_Main', content: 'MERRY XMAS', color: 'bg-indigo-600' },
+    { id: 'v1', type: 'video', startTime: 0, duration: 8, trimStart: 0, originalDuration: 8, allowExtension: false, name: 'Ferret_Christmas_Vibe', url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4', color: 'bg-zinc-700' },
+    { id: 't1', type: 'text', startTime: 1, duration: 4, trimStart: 0, name: 'Title_Main', content: 'MERRY XMAS', color: 'bg-indigo-600' },
   ]);
   const [library, setLibrary] = useState<{name: string, url: string, duration: number}[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [shakeIntensity, setShakeIntensity] = useState(1.2);
   const [isShakeEnabled, setIsShakeEnabled] = useState(true);
   const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
+
+  // Ghost states for drag-and-drop from library
+  const [draggingAsset, setDraggingAsset] = useState<{name: string, url: string, duration: number} | null>(null);
+  const [dragOverTime, setDragOverTime] = useState<number | null>(null);
 
   const playheadRef = useRef<HTMLDivElement>(null);
   const timeDisplayRef = useRef<HTMLSpanElement>(null);
@@ -39,7 +45,7 @@ function QuickCutEditor() {
   const lastUpdateRef = useRef(0);
   const currentClipIdRef = useRef<string | null>(null);
   const isScrubbingRef = useRef(false);
-  const dragInfo = useRef<{ id: string; type: 'move' | 'trim'; initialX: number; initialStartTime: number; initialDuration: number; } | null>(null);
+  const dragInfo = useRef<{ id: string; type: DragType; initialX: number; initialStartTime: number; initialDuration: number; initialTrimStart: number; } | null>(null);
 
   const projectDuration = useMemo(() => items.length === 0 ? 0 : Math.max(...items.map(i => i.startTime + i.duration)), [items]);
 
@@ -54,16 +60,53 @@ function QuickCutEditor() {
     }
   }, [pxPerSec]);
 
+  // Keyboard controls
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      
+      if (e.code === 'Space' && !isTyping) {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Utility for initial placements (Add from library)
+  const getSnappedTime = useCallback((rawTime: number, excludeId: string | null = null) => {
+    if (!isMagnetEnabled) return rawTime;
+    const threshold = 12 / pxPerSec; 
+    const snapPoints = [0, internalTimeRef.current];
+    items.forEach(item => {
+      if (item.id !== excludeId) {
+        snapPoints.push(item.startTime);
+        snapPoints.push(item.startTime + item.duration);
+      }
+    });
+    let closest = rawTime;
+    let minDelta = threshold;
+    for (const p of snapPoints) {
+      const delta = Math.abs(rawTime - p);
+      if (delta < minDelta) { minDelta = delta; closest = p; }
+    }
+    return closest;
+  }, [items, isMagnetEnabled, pxPerSec]);
+
   const syncMedia = useCallback((t: number, forceSeek = false) => {
     if (!videoRef.current) return;
     const v = videoRef.current;
     const activeVideo = items.find(i => i.type === 'video' && t >= i.startTime && t <= i.startTime + i.duration);
     
     if (activeVideo) {
-      const targetSeekTime = t - activeVideo.startTime;
+      const targetSeekTime = (t - activeVideo.startTime) + activeVideo.trimStart;
       if (currentClipIdRef.current !== activeVideo.id) {
         currentClipIdRef.current = activeVideo.id;
         v.src = activeVideo.url!;
+        v.load();
         v.currentTime = targetSeekTime;
         if (isPlaying && !isScrubbingRef.current) v.play().catch(() => {});
       } else {
@@ -77,9 +120,17 @@ function QuickCutEditor() {
       }
     } else {
       currentClipIdRef.current = null;
-      if (!v.paused) v.pause();
+      if (v.src !== '') {
+        v.pause();
+        v.src = '';
+        v.load();
+      }
     }
   }, [items, isPlaying]);
+
+  useEffect(() => {
+    syncMedia(internalTimeRef.current, true);
+  }, [items, syncMedia]);
 
   const animate = useCallback((now: number) => {
     if (!lastUpdateRef.current) lastUpdateRef.current = now;
@@ -91,8 +142,8 @@ function QuickCutEditor() {
       if (videoRef.current && currentClipIdRef.current) {
         const activeClip = items.find(i => i.id === currentClipIdRef.current);
         if (activeClip && !videoRef.current.paused && !videoRef.current.seeking) {
-           if (activeClip.originalDuration && (t - activeClip.startTime) < activeClip.originalDuration) {
-              t = activeClip.startTime + videoRef.current.currentTime;
+           if (activeClip.originalDuration && (t - activeClip.startTime + activeClip.trimStart) < activeClip.originalDuration) {
+              t = activeClip.startTime + (videoRef.current.currentTime - activeClip.trimStart);
            }
         }
       }
@@ -125,13 +176,41 @@ function QuickCutEditor() {
       const idx = prev.findIndex(i => i.id === targetId);
       const item = prev[idx];
       if (!item || t <= item.startTime || t >= item.startTime + item.duration) return prev;
-      const first = { ...item, duration: t - item.startTime };
-      const second = { ...item, id: Math.random().toString(36).substr(2, 9), startTime: t, duration: item.duration - (t - item.startTime), name: `${item.name}_part2` };
+      
+      const splitPoint = t - item.startTime;
+      const first = { ...item, duration: splitPoint };
+      const second: TimelineItem = { 
+        ...item, 
+        id: Math.random().toString(36).substr(2, 9), 
+        startTime: t, 
+        duration: item.duration - splitPoint,
+        trimStart: item.trimStart + splitPoint,
+        name: `${item.name}_part2` 
+      };
+      
       const next = [...prev];
       next.splice(idx, 1, first, second);
       return next;
     });
   }, [selectedItemId, items]);
+
+  const autoArrangeClips = useCallback(() => {
+    setItems(prev => {
+      // Specifically target only video items for arrangement
+      const videos = prev.filter(i => i.type === 'video').sort((a, b) => a.startTime - b.startTime);
+      const others = prev.filter(i => i.type !== 'video');
+      
+      let currentTime = 0;
+      const arrangedVideos = videos.map(v => {
+        const updated = { ...v, startTime: currentTime };
+        currentTime += v.duration;
+        return updated;
+      });
+      
+      // Merge arranged videos with original position non-video items
+      return [...arrangedVideos, ...others];
+    });
+  }, []);
 
   const handleImport = async (files: FileList) => {
     const list = Array.from(files).filter(f => f.type.startsWith('video/'));
@@ -159,40 +238,126 @@ function QuickCutEditor() {
     }
   }, [pxPerSec, updateUI, syncMedia]);
 
-  const startDrag = (e: React.MouseEvent, item: TimelineItem, type: 'move' | 'trim') => {
-    dragInfo.current = { id: item.id, type, initialX: e.clientX, initialStartTime: item.startTime, initialDuration: item.duration };
+  const startDrag = (e: React.MouseEvent, item: TimelineItem, type: DragType) => {
+    dragInfo.current = { 
+      id: item.id, 
+      type, 
+      initialX: e.clientX, 
+      initialStartTime: item.startTime, 
+      initialDuration: item.duration,
+      initialTrimStart: item.trimStart
+    };
   };
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (isScrubbingRef.current) handleScrub(e.clientX);
-      else if (dragInfo.current) {
+      if (isScrubbingRef.current) {
+        handleScrub(e.clientX);
+      } else if (dragInfo.current) {
         const info = dragInfo.current;
         const deltaTime = (e.clientX - info.initialX) / pxPerSec;
-        setItems(prev => prev.map(item => {
-          if (item.id === info.id) {
-            if (info.type === 'move') {
-              let next = Math.max(0, info.initialStartTime + deltaTime);
-              if (isMagnetEnabled) {
-                if (next < SNAP_THRESHOLD) next = 0;
-                if (Math.abs(next - internalTimeRef.current) < SNAP_THRESHOLD) next = internalTimeRef.current;
-                if (Math.abs(next - projectDuration) < SNAP_THRESHOLD) next = projectDuration;
-              }
-              return { ...item, startTime: next };
-            } else {
-              let nextDur = Math.max(0.1, info.initialDuration + deltaTime);
-              if (item.type === 'video' && !item.allowExtension && item.originalDuration) nextDur = Math.min(nextDur, item.originalDuration);
-              return { ...item, duration: nextDur };
+        
+        setItems(prev => {
+          const snapThresholdTime = 12 / pxPerSec;
+          const snapPoints: number[] = [0, internalTimeRef.current];
+          prev.forEach(i => {
+            if (i.id !== info.id) {
+              snapPoints.push(i.startTime);
+              snapPoints.push(i.startTime + i.duration);
             }
-          }
-          return item;
-        }));
+          });
+
+          return prev.map(item => {
+            if (item.id === info.id) {
+              if (info.type === 'move') {
+                const rawNextStart = Math.max(0, info.initialStartTime + deltaTime);
+                const rawNextEnd = rawNextStart + item.duration;
+                if (!isMagnetEnabled) return { ...item, startTime: rawNextStart };
+
+                let bestStart = rawNextStart;
+                let minDelta = snapThresholdTime;
+                for (const p of snapPoints) {
+                  const dStart = Math.abs(rawNextStart - p);
+                  if (dStart < minDelta) { minDelta = dStart; bestStart = p; }
+                  const dEnd = Math.abs(rawNextEnd - p);
+                  if (dEnd < minDelta) { minDelta = dEnd; bestStart = p - item.duration; }
+                }
+                return { ...item, startTime: Math.max(0, bestStart) };
+              } else if (info.type === 'trim-end') {
+                const rawNextDur = Math.max(0.1, info.initialDuration + deltaTime);
+                const rawNextEnd = item.startTime + rawNextDur;
+                
+                // Content limit for end-trim: originalDuration
+                let maxDur = Infinity;
+                if (item.type === 'video' && !item.allowExtension && item.originalDuration) {
+                  maxDur = item.originalDuration - item.trimStart;
+                }
+
+                if (!isMagnetEnabled) {
+                  return { ...item, duration: Math.max(0.1, Math.min(rawNextDur, maxDur)) };
+                }
+
+                let bestEnd = rawNextEnd;
+                let minDelta = snapThresholdTime;
+                for (const p of snapPoints) {
+                  const d = Math.abs(rawNextEnd - p);
+                  if (d < minDelta) { minDelta = d; bestEnd = p; }
+                }
+                let nextDur = Math.min(bestEnd - item.startTime, maxDur);
+                return { ...item, duration: Math.max(0.1, nextDur) };
+              } else if (info.type === 'trim-start') {
+                // Calculate how much we are trying to shift the start
+                let effectiveDelta = deltaTime;
+                
+                // Restriction: Cannot trim left past the original video start (trimStart = 0)
+                // trimStart = initialTrimStart + delta. We want trimStart >= 0.
+                // delta >= -initialTrimStart.
+                if (effectiveDelta < -info.initialTrimStart) {
+                  effectiveDelta = -info.initialTrimStart;
+                }
+
+                const rawNextStart = info.initialStartTime + effectiveDelta;
+                const fixedEnd = info.initialStartTime + info.initialDuration;
+                
+                let bestStart = rawNextStart;
+                if (isMagnetEnabled) {
+                  let minDelta = snapThresholdTime;
+                  for (const p of snapPoints) {
+                    const d = Math.abs(rawNextStart - p);
+                    // Magnet should still respect the trimStart boundary
+                    if (d < minDelta) {
+                      const candidateStart = p;
+                      const candidateDelta = candidateStart - info.initialStartTime;
+                      if (info.initialTrimStart + candidateDelta >= 0) {
+                        minDelta = d; 
+                        bestStart = p;
+                      }
+                    }
+                  }
+                }
+                
+                // Ensure we don't trim past the end of the clip
+                if (bestStart >= fixedEnd - 0.1) bestStart = fixedEnd - 0.1;
+                
+                const finalDelta = bestStart - info.initialStartTime;
+
+                return { 
+                  ...item, 
+                  startTime: bestStart, 
+                  duration: fixedEnd - bestStart,
+                  trimStart: info.initialTrimStart + finalDelta
+                };
+              }
+            }
+            return item;
+          });
+        });
       }
     };
     const onUp = () => { isScrubbingRef.current = false; dragInfo.current = null; };
     window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [isMagnetEnabled, pxPerSec, handleScrub, projectDuration]);
+  }, [isMagnetEnabled, pxPerSec, handleScrub]);
 
   const renderRuler = useMemo(() => {
     const res = [];
@@ -204,18 +369,43 @@ function QuickCutEditor() {
     return res;
   }, [pxPerSec]);
 
+  const handleDropFromLibrary = useCallback((asset: { name: string, url: string, duration: number }, startTime: number) => {
+    const newItem: TimelineItem = { 
+      id: Math.random().toString(36).substr(2, 9), 
+      type: 'video', 
+      startTime: getSnappedTime(startTime), 
+      duration: asset.duration, 
+      trimStart: 0,
+      originalDuration: asset.duration, 
+      allowExtension: false, 
+      name: asset.name, 
+      url: asset.url, 
+      color: 'bg-zinc-700' 
+    };
+    setItems(p => [...p, newItem]);
+    setSelectedItemId(newItem.id);
+    setDraggingAsset(null);
+    setDragOverTime(null);
+  }, [getSnappedTime]);
+
+  const handleDragUpdateInTimeline = useCallback((t: number) => {
+     setDragOverTime(getSnappedTime(t));
+  }, [getSnappedTime]);
+
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
-      <Header onSettingsClick={() => setShowSettingsModal(true)} onBrandClick={() => setSelectedItemId(null)} timeDisplayRef={timeDisplayRef} />
+      <Header onSettingsClick={() => setShowSettingsModal(true)} onBrandClick={() => setSelectedItemId(null)} timeDisplayRef={timeDisplayRef} projectDuration={projectDuration} />
       <main className="flex-1 flex overflow-hidden min-h-0">
-        <MediaBin library={library} onImport={handleImport} onAddFromLibrary={(a) => {
-          const newItem = { id: Math.random().toString(36).substr(2, 9), type: 'video' as TrackType, startTime: internalTimeRef.current, duration: a.duration, originalDuration: a.duration, allowExtension: false, name: a.name, url: a.url, color: 'bg-zinc-700' };
-          setItems(p => [...p, newItem]); setSelectedItemId(newItem.id);
-        }} />
+        <MediaBin 
+          library={library} 
+          onImport={handleImport} 
+          onAddFromLibrary={(a) => handleDropFromLibrary(a, internalTimeRef.current)}
+          onDragStart={setDraggingAsset}
+        />
         <div className="flex-1 flex flex-col bg-black relative overflow-hidden min-h-0">
-          <PreviewPlayer videoRef={videoRef} items={items} currentTime={internalTimeRef.current} projectSettings={projectSettings} isShakeEnabled={isShakeEnabled} shakeIntensity={shakeIntensity} isPlaying={isPlaying} />
-          <TransportControls isPlaying={isPlaying} setIsPlaying={setIsPlaying} onSplit={splitClip} onJumpToStart={jumpToStart} onJumpToEnd={jumpToEnd} isLooping={isLooping} setIsLooping={setIsLooping} />
+          <PreviewPlayer videoRef={videoRef} items={items} currentTime={internalTimeRef.current} projectDuration={projectDuration} projectSettings={projectSettings} isShakeEnabled={isShakeEnabled} shakeIntensity={shakeIntensity} isPlaying={isPlaying} />
+          <TransportControls isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={jumpToStart} onJumpToEnd={jumpToEnd} isLooping={isLooping} setIsLooping={setIsLooping} />
         </div>
         <Inspector 
           activeItem={items.find(i => i.id === selectedItemId)} 
@@ -231,12 +421,18 @@ function QuickCutEditor() {
         isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled}
         projectDuration={projectDuration}
         onAddItem={(type) => {
-          const newItem = { id: Math.random().toString(36).substr(2, 9), type, startTime: internalTimeRef.current, duration: 5, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', content: type === 'text' ? 'EDIT TEXT' : undefined, allowExtension: type === 'text' };
+          const newItem: TimelineItem = { id: Math.random().toString(36).substr(2, 9), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', content: type === 'text' ? 'EDIT TEXT' : undefined, allowExtension: type === 'text' };
           setItems(p => [...p, newItem]); setSelectedItemId(newItem.id);
         }}
+        onSplit={splitClip}
+        onAutoArrange={autoArrangeClips}
         onMouseDown={(e) => { isScrubbingRef.current = true; setIsPlaying(false); handleScrub(e.clientX); }}
         onStartDrag={startDrag} renderRuler={renderRuler} 
         playheadRef={playheadRef} timelineRef={timelineRef}
+        onDropFromLibrary={handleDropFromLibrary}
+        draggingAsset={draggingAsset}
+        dragOverTime={dragOverTime}
+        onDragUpdate={handleDragUpdateInTimeline}
       />
       <style>{`
         @keyframes handheld { 0% { transform: translate3d(0,0,0); } 25% { transform: translate3d(calc(0.6px * var(--shake-intensity)), calc(-0.4px * var(--shake-intensity)), 0) rotate(0.02deg); } 50% { transform: translate3d(calc(-0.4px * var(--shake-intensity)), calc(0.8px * var(--shake-intensity)), 0) rotate(-0.02deg); } 100% { transform: translate3d(0,0,0); } }
@@ -250,4 +446,4 @@ function QuickCutEditor() {
   );
 }
 
-createRoot(document.getElementById('root')!).render(<QuickCutEditor />);
+createRoot(document.getElementById('root')!).render(<RapidCutEditor />);

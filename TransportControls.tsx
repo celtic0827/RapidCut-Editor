@@ -1,11 +1,10 @@
 
 import React from 'react';
-import { Play, Pause, Scissors, Maximize, SkipBack, SkipForward, Repeat } from 'lucide-react';
+import { Play, Pause, Maximize, SkipBack, SkipForward, Repeat } from 'lucide-react';
 
 interface TransportProps {
   isPlaying: boolean;
   setIsPlaying: (val: boolean) => void;
-  onSplit: () => void;
   onJumpToStart: () => void;
   onJumpToEnd: () => void;
   isLooping: boolean;
@@ -13,13 +12,11 @@ interface TransportProps {
 }
 
 export const TransportControls = ({ 
-  isPlaying, setIsPlaying, onSplit, onJumpToStart, 
+  isPlaying, setIsPlaying, onJumpToStart, 
   onJumpToEnd, isLooping, setIsLooping 
 }: TransportProps) => (
   <div className="h-10 flex items-center justify-center gap-4 bg-[#151518] border-t border-black px-4 shrink-0 shadow-inner">
-    <button onClick={onSplit} className="text-zinc-500 hover:text-white flex items-center gap-1.5 transition-colors mr-auto ml-2">
-      <Scissors size={12} /> <span className="text-[9px] font-bold tracking-tighter">SPLIT (S)</span>
-    </button>
+    <div className="flex-1 hidden md:block" />
     
     <div className="flex items-center gap-3">
       <button onClick={onJumpToStart} className="text-zinc-400 hover:text-white transition-colors" title="Jump to Start"><SkipBack size={16} fill="currentColor" /></button>
@@ -36,6 +33,8 @@ export const TransportControls = ({
       </button>
     </div>
 
-    <button className="text-zinc-500 hover:text-white transition-colors ml-auto mr-2"><Maximize size={12} /></button>
+    <div className="flex-1 flex justify-end">
+       <button className="text-zinc-500 hover:text-white transition-colors mr-2"><Maximize size={12} /></button>
+    </div>
   </div>
 );
