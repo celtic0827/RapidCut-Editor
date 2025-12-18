@@ -170,6 +170,7 @@ function RapidCutEditor() {
 
   const handleImport = async (files: FileList) => {
     const list = Array.from(files).filter(f => f.type.startsWith('video/'));
+    const importedAssets = [];
     for (const file of list) {
       const url = URL.createObjectURL(file);
       const duration = await new Promise<number>((r) => {
@@ -178,9 +179,36 @@ function RapidCutEditor() {
         v.onloadedmetadata = () => r(v.duration);
         v.onerror = () => r(5);
       });
-      setLibrary(prev => [...prev, { name: file.name, url, duration }]);
+      const asset = { name: file.name, url, duration };
+      importedAssets.push(asset);
+      setLibrary(prev => [...prev, asset]);
     }
+    return importedAssets;
   };
+
+  const onDropExternalFiles = useCallback(async (files: FileList, startTime: number) => {
+    const assets = await handleImport(files);
+    let currentStart = startTime;
+    const newItems: TimelineItem[] = assets.map(asset => {
+      const item: TimelineItem = { 
+        id: Math.random().toString(), 
+        type: 'video', 
+        startTime: currentStart, 
+        duration: asset.duration, 
+        trimStart: 0, 
+        originalDuration: asset.duration, 
+        name: asset.name, 
+        url: asset.url, 
+        color: 'bg-zinc-700', 
+        fx: { ...DEFAULT_FX, seed: Math.floor(Math.random() * 100) } 
+      };
+      currentStart += asset.duration;
+      return item;
+    });
+    setItems(p => [...p, ...newItems]);
+    if (newItems.length > 0) setSelectedItemId(newItems[0].id);
+    setDragOverTime(null);
+  }, []);
 
   const handleScrub = useCallback((clientX: number) => {
     if (timelineRef.current) {
@@ -360,6 +388,7 @@ function RapidCutEditor() {
         setIsLooping={setIsLooping}
         renderRuler={renderRuler}
         onDropFromLibrary={onDropFromLibrary}
+        onDropExternalFiles={onDropExternalFiles}
         draggingAsset={draggingAsset}
         dragOverTime={dragOverTime}
         onDragUpdate={setDragOverTime}

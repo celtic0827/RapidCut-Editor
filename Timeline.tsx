@@ -35,6 +35,7 @@ interface TimelineProps {
   playheadRef: React.RefObject<HTMLDivElement>;
   timelineRef: React.RefObject<HTMLDivElement>;
   onDropFromLibrary: (asset: { name: string, url: string, duration: number }, startTime: number) => void;
+  onDropExternalFiles: (files: FileList, startTime: number) => void;
   draggingAsset: {name: string, url: string, duration: number} | null;
   dragOverTime: number | null;
   onDragUpdate: (t: number) => void;
@@ -45,19 +46,29 @@ export const Timeline = ({
   isMagnetEnabled, setIsMagnetEnabled, projectDuration, totalTimelineDuration, onAddItem, onSplit, onAutoArrange,
   isPlaying, setIsPlaying, onJumpToStart, onJumpToEnd, isLooping, setIsLooping,
   onMouseDown, onStartDrag, renderRuler, playheadRef, timelineRef,
-  onDropFromLibrary, draggingAsset, dragOverTime, onDragUpdate
+  onDropFromLibrary, onDropExternalFiles, draggingAsset, dragOverTime, onDragUpdate
 }: TimelineProps) => {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    if (!timelineRef.current) return;
+
+    const rect = timelineRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left + timelineRef.current.scrollLeft;
+    const startTime = Math.max(0, x / pxPerSec);
+
+    // 1. Check for native OS files
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      onDropExternalFiles(e.dataTransfer.files, startTime);
+      return;
+    }
+
+    // 2. Check for internal library assets
     const data = e.dataTransfer.getData('application/json');
-    if (!data || !timelineRef.current) return;
+    if (!data) return;
 
     try {
       const asset = JSON.parse(data);
-      const rect = timelineRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left + timelineRef.current.scrollLeft;
-      const startTime = Math.max(0, x / pxPerSec);
       onDropFromLibrary(asset, startTime);
     } catch (err) {
       console.error('Failed to parse dropped asset data', err);
@@ -68,7 +79,7 @@ export const Timeline = ({
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     
-    if (draggingAsset && timelineRef.current) {
+    if (timelineRef.current) {
       const rect = timelineRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left + timelineRef.current.scrollLeft;
       const startTime = Math.max(0, x / pxPerSec);
