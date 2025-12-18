@@ -1,9 +1,10 @@
-
 import React, { useState, useRef } from 'react';
 import { X, Loader2, CheckCircle2, AlertCircle, Music, ShieldCheck, Zap, HardDriveDownload, AlertTriangle } from 'lucide-react';
 import { TimelineItem, ProjectSettings, RenderSettings } from './types';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL } from '@ffmpeg/util';
+
+// 我們改用 index.html 中引入的 UMD 版本全局對象，以避開 ESM Worker 的跨域攔截問題
+const { FFmpeg } = (window as any).FFmpegWasm || {};
+const { toBlobURL } = (window as any).FFmpegUtil || {};
 
 interface RenderModalProps {
   isOpen: boolean;
@@ -23,7 +24,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     bitrate: 10000000 
   });
 
-  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const ffmpegRef = useRef<any>(null);
   const abortController = useRef<boolean>(false);
 
   if (!isOpen) return null;
@@ -31,27 +32,34 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   const loadFFmpeg = async () => {
     if (ffmpegRef.current) return ffmpegRef.current;
     
-    // 檢查瀏覽器環境是否支援 SharedArrayBuffer (FFmpeg 0.12+ 必須)
-    if (!window.SharedArrayBuffer) {
-      throw new Error('此瀏覽器環境未啟用 SharedArrayBuffer。請確保伺服器已設置 COOP/COEP 標頭，或在支援的環境中執行。');
+    setStatus('loading-wasm');
+    
+    if (!FFmpeg) {
+      throw new Error("FFmpeg 庫尚未載入。請檢查網路連接。");
     }
 
-    setStatus('loading-wasm');
     const ffmpeg = new FFmpeg();
-    const coreVersion = '0.12.6';
     
-    // 改用 jsdelivr 提升在大陸或特定環境下的抓取成功率
-    const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
+    // 優先考慮穩定性：在不支援 SharedArrayBuffer 的環境中強制載入單線程版本
+    // 這裡我們使用與 0.12.10 相容的核心路徑
+    const coreVersion = '0.12.10';
+    const isSharedArrayBufferEnabled = typeof SharedArrayBuffer !== 'undefined';
+    
+    // 如果沒有 COOP/COEP，我們必須使用不支持多線程的環境
+    const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/umd`;
     
     try {
+      // 終極解決方案：使用 toBlobURL 將跨域腳本轉換為本地 Blob
+      // 這能解決大部分沙盒環境下的 'Failed to construct Worker' 錯誤
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        // 即使是單線程模式，也建議提供 workerURL 以防萬一
         workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('FFmpeg Load Error Details:', err);
-      throw new Error('無法從 CDN 獲取 FFmpeg 核心文件 (Failed to fetch)。請檢查網路連線或 CORS 限制。');
+      throw new Error(`渲染引擎啟動失敗。這通常是因為當前託管環境禁止了 Web Worker 的跨域運行。建議在支援 COOP/COEP 的伺服器上部署，或更換瀏覽器試試。`);
     }
     
     ffmpegRef.current = ffmpeg;
@@ -223,13 +231,13 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     } catch (err: any) {
       console.error('RapidCut FFmpeg Error:', err);
       setStatus('error');
-      setErrorMsg(err.message || '渲染核心異常。請確認環境支援隔離標頭。');
+      setErrorMsg(err.message || '渲染核心異常。');
     }
   };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-xl p-4">
-      <div className="w-full max-w-sm bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="w-full max-sm bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-zinc-900/50">
           <div className="flex items-center gap-2">
             <HardDriveDownload size={16} className="text-indigo-400" />
@@ -241,11 +249,13 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         <div className="p-8 text-center">
           {status === 'idle' && (
             <div className="space-y-6">
-              <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
-                <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
+              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-start gap-3 text-left">
+                <ShieldCheck size={16} className="text-emerald-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">穩定渲染模式 (v2)</p>
-                  <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">切換至 JSDelivr 鏡像並加入環境檢查。這能有效避免部分地區因網路問題導致的 "Failed to fetch" 錯誤。</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">相容性渲染模式 (v5)</p>
+                  <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">
+                    已自動切換至 UMD 模式並套用 Blob 封裝技術。這專為嚴格的沙盒環境設計，能大幅降低跨域錯誤率。
+                  </p>
                 </div>
               </div>
               <div className="text-left">

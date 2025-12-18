@@ -12,9 +12,7 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "lucide-react": "0.475.0",
-    "mp4box": "0.5.2",
-    "@ffmpeg/ffmpeg": "0.12.10",
-    "@ffmpeg/util": "0.12.1"
+    "mp4box": "0.5.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
