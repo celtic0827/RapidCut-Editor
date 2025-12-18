@@ -8,12 +8,18 @@ export interface ProjectSettings {
   fps: number;
 }
 
+export interface RenderSettings {
+  filename: string;
+  quality: 'low' | 'medium' | 'high';
+  bitrate: number;
+}
+
 export interface ClipFX {
   shakeIntensity: number;
   shakeFrequency: number;
   shakeZoom: number;
   shakeEnabled: boolean;
-  seed: number; // Added for randomized phase
+  seed: number;
 }
 
 export interface TimelineItem {
@@ -29,8 +35,8 @@ export interface TimelineItem {
   content?: string;
   effect?: TitleEffect;
   color: string;
-  volume?: number; // For audio clips
-  fx?: ClipFX;    // Per-clip effects
+  volume?: number;
+  fx?: ClipFX;
 }
 
 export interface FXPreset {

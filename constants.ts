@@ -1,5 +1,5 @@
 
-export const SNAP_THRESHOLD = 0.12; 
+export const SNAP_THRESHOLD = 0.25; 
 export const MAX_VIDEO_DURATION = 3600; // Hard limit 1 hour
 export const TIMELINE_BUFFER_SECONDS = 90; // 1 min 30s buffer
 export const MIN_TIMELINE_DURATION = 60; // Start with at least 60s

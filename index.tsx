@@ -9,6 +9,7 @@ import {
   MIN_TIMELINE_DURATION 
 } from './constants';
 import { ProjectSettingsModal } from './ProjectSettingsModal';
+import { RenderModal } from './RenderModal';
 import { Header } from './Header';
 import { MediaBin } from './MediaBin';
 import { StylePalette } from './StylePalette';
@@ -30,6 +31,7 @@ function RapidCutEditor() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [pxPerSec, setPxPerSec] = useState(15);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showRenderModal, setShowRenderModal] = useState(false);
   const [isLooping, setIsLooping] = useState(false);
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>({
     width: 528, height: 768, fps: 30
@@ -228,7 +230,6 @@ function RapidCutEditor() {
     if (!selectedItemId) return;
     setItems(prev => prev.map(item => {
       if (item.id === selectedItemId && item.type === 'video') {
-        // We keep the clip's unique seed if possible or use the preset's seed
         return { ...item, fx: { ...preset.fx } };
       }
       return item;
@@ -248,26 +249,100 @@ function RapidCutEditor() {
       else if (dragInfo.current) {
         const info = dragInfo.current;
         const deltaTime = (e.clientX - info.initialX) / pxPerSec;
-        setItems(prev => prev.map(item => {
-          if (item.id === info.id) {
-            if (info.type === 'move') return { ...item, startTime: Math.max(0, info.initialStartTime + deltaTime) };
-            if (info.type === 'trim-end') return { ...item, duration: Math.max(0.1, info.initialDuration + deltaTime) };
-            if (info.type === 'trim-start') {
-              const rawNextStart = info.initialStartTime + deltaTime;
-              const fixedEnd = info.initialStartTime + info.initialDuration;
-              const finalStart = Math.min(Math.max(0, rawNextStart), fixedEnd - 0.1);
-              const delta = finalStart - info.initialStartTime;
-              return { ...item, startTime: finalStart, duration: fixedEnd - finalStart, trimStart: info.initialTrimStart + delta };
-            }
+        
+        setItems(prev => {
+          // Calculate dynamic snapping threshold (e.g., 12 pixels) in seconds
+          const snapThresholdSec = 12 / pxPerSec;
+          
+          // Snap points: Start of timeline, Playhead, and every other clip's boundary
+          const snapPoints = [0, internalTimeRef.current];
+          if (isMagnetEnabled) {
+            prev.forEach(i => {
+              if (i.id !== info.id) {
+                snapPoints.push(i.startTime);
+                snapPoints.push(i.startTime + i.duration);
+              }
+            });
           }
-          return item;
-        }));
+
+          const getSnappedTime = (time: number) => {
+            if (!isMagnetEnabled) return time;
+            let closest = time;
+            let minDiff = snapThresholdSec;
+            for (const p of snapPoints) {
+              const diff = Math.abs(time - p);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closest = p;
+              }
+            }
+            return closest;
+          };
+
+          return prev.map(item => {
+            if (item.id === info.id) {
+              const originalDuration = item.originalDuration ?? Infinity;
+
+              if (info.type === 'move') {
+                let newStart = info.initialStartTime + deltaTime;
+                const snappedStart = getSnappedTime(newStart);
+                const snappedEnd = getSnappedTime(newStart + item.duration);
+                
+                // Prioritize start snap, then end snap
+                if (Math.abs(snappedStart - newStart) <= Math.abs(snappedEnd - (newStart + item.duration))) {
+                  if (Math.abs(snappedStart - newStart) < snapThresholdSec) newStart = snappedStart;
+                } else {
+                  if (Math.abs(snappedEnd - (newStart + item.duration)) < snapThresholdSec) newStart = snappedEnd - item.duration;
+                }
+                
+                return { ...item, startTime: Math.max(0, newStart) };
+              }
+              
+              if (info.type === 'trim-end') {
+                const rawEnd = info.initialStartTime + info.initialDuration + deltaTime;
+                let finalEnd = getSnappedTime(rawEnd);
+                
+                // Trimming Constraints: Cannot trim past the source file's end
+                if (item.type === 'video' && !item.allowExtension) {
+                   const maxEnd = item.startTime + (originalDuration - item.trimStart);
+                   finalEnd = Math.min(finalEnd, maxEnd);
+                }
+                
+                return { ...item, duration: Math.max(0.1, finalEnd - item.startTime) };
+              }
+              
+              if (info.type === 'trim-start') {
+                const fixedEnd = info.initialStartTime + info.initialDuration;
+                const rawStart = info.initialStartTime + deltaTime;
+                let finalStart = getSnappedTime(rawStart);
+                
+                // Prevent trimming past the fixed end
+                finalStart = Math.min(finalStart, fixedEnd - 0.1);
+
+                // Trimming Constraints: trimStart cannot be negative
+                if (item.type === 'video') {
+                  const minPossibleStart = info.initialStartTime - info.initialTrimStart;
+                  finalStart = Math.max(finalStart, minPossibleStart);
+                }
+                
+                const finalDelta = finalStart - info.initialStartTime;
+                return { 
+                  ...item, 
+                  startTime: Math.max(0, finalStart), 
+                  duration: fixedEnd - finalStart, 
+                  trimStart: info.initialTrimStart + finalDelta 
+                };
+              }
+            }
+            return item;
+          });
+        });
       }
     };
     const onUp = () => { isScrubbingRef.current = false; dragInfo.current = null; };
     window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [pxPerSec, handleScrub]);
+  }, [pxPerSec, handleScrub, isMagnetEnabled]);
 
   const onSplit = useCallback(() => {
     if (!selectedItemId) return;
@@ -283,7 +358,6 @@ function RapidCutEditor() {
       startTime: t,
       duration: item.duration - splitRel,
       trimStart: item.trimStart + splitRel,
-      // Give the split clip a new unique seed
       fx: item.fx ? { ...item.fx, seed: Math.floor(Math.random() * 100) } : undefined
     };
     
@@ -296,13 +370,18 @@ function RapidCutEditor() {
 
   const onAutoArrange = useCallback(() => {
     setItems(prev => {
-      const sorted = [...prev].sort((a, b) => a.startTime - b.startTime);
-      let curr = 0;
-      return sorted.map(i => {
-        const updated = { ...i, startTime: curr };
-        curr += i.duration;
+      // Only arrange 'video' track clips (V1)
+      const videos = prev.filter(i => i.type === 'video').sort((a, b) => a.startTime - b.startTime);
+      const nonVideos = prev.filter(i => i.type !== 'video');
+      
+      let cursor = 0;
+      const arrangedVideos = videos.map(v => {
+        const updated = { ...v, startTime: cursor };
+        cursor += v.duration;
         return updated;
       });
+      
+      return [...arrangedVideos, ...nonVideos];
     });
   }, []);
 
@@ -337,7 +416,20 @@ function RapidCutEditor() {
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
-      <Header onSettingsClick={() => setShowSettingsModal(true)} onBrandClick={() => setSelectedItemId(null)} timeDisplayRef={timeDisplayRef} projectDuration={projectDuration} />
+      <RenderModal 
+        isOpen={showRenderModal} 
+        onClose={() => setShowRenderModal(false)} 
+        items={items} 
+        projectSettings={projectSettings} 
+        projectDuration={projectDuration} 
+      />
+      <Header 
+        onSettingsClick={() => setShowSettingsModal(true)} 
+        onBrandClick={() => setSelectedItemId(null)} 
+        onRenderClick={() => setShowRenderModal(true)}
+        timeDisplayRef={timeDisplayRef} 
+        projectDuration={projectDuration} 
+      />
       <main className="flex-1 flex overflow-hidden min-h-0">
         <div className="flex shrink-0">
           <MediaBin 

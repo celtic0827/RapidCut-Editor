@@ -1,11 +1,12 @@
 
 import React from 'react';
-import { Clapperboard, Settings2 } from 'lucide-react';
+import { Clapperboard, Settings2, Download } from 'lucide-react';
 import { ProjectSettings } from './types';
 
 interface HeaderProps {
   onSettingsClick: () => void;
   onBrandClick: () => void;
+  onRenderClick: () => void;
   timeDisplayRef: React.RefObject<HTMLSpanElement>;
   projectDuration: number;
 }
@@ -17,7 +18,7 @@ const formatTime = (t: number) => {
   return `${mins}:${secs}:${ms}`;
 };
 
-export const Header = ({ onSettingsClick, onBrandClick, timeDisplayRef, projectDuration }: HeaderProps) => (
+export const Header = ({ onSettingsClick, onBrandClick, onRenderClick, timeDisplayRef, projectDuration }: HeaderProps) => (
   <header className="h-8 flex items-center justify-between px-3 border-b border-black bg-[#151518] shrink-0">
     <div className="flex items-center gap-4">
       <div className="flex items-center gap-1.5 px-2 bg-indigo-600/20 py-0.5 rounded cursor-pointer group" onClick={onBrandClick}>
@@ -38,7 +39,12 @@ export const Header = ({ onSettingsClick, onBrandClick, timeDisplayRef, projectD
         <span className="text-zinc-700 font-bold">/</span>
         <span className="text-zinc-500">{formatTime(projectDuration)}</span>
       </div>
-      <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-0.5 rounded text-[10px] font-black transition-all">RENDER</button>
+      <button 
+        onClick={onRenderClick}
+        className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-0.5 rounded text-[10px] font-black transition-all flex items-center gap-1.5 shadow-lg shadow-indigo-600/20 group"
+      >
+        <Download size={10} className="group-hover:translate-y-0.5 transition-transform" /> RENDER
+      </button>
     </div>
   </header>
 );
