@@ -81,23 +81,30 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
 
-  // --- Linked Media Logic ---
+  // --- Linked Media Logic (持久化權限優化) ---
 
   const relinkAllMedia = async () => {
     setIsRestoringMedia(true);
     const updatedLibrary = [...library];
     const urlMap = new Map<string, string>();
 
+    // 注意：requestPermission 必須由按鈕點擊觸發
     for (let i = 0; i < updatedLibrary.length; i++) {
       const asset = updatedLibrary[i];
       const handle = await assetDB.getHandle(asset.id);
       if (handle) {
         try {
-          // 請求讀取權限 (彈出視窗只需點一次)
-          // Fix: Added @ts-ignore because requestPermission might not be in standard TypeScript lib
+          // 先檢查是否已經有權限（瀏覽器可能記住了）
           // @ts-ignore
-          const permission = await handle.requestPermission({ mode: 'read' });
-          if (permission === 'granted') {
+          let state = await handle.queryPermission({ mode: 'read' });
+          
+          if (state !== 'granted') {
+            // 如果瀏覽器沒記住，則彈窗要求權限
+            // @ts-ignore
+            state = await handle.requestPermission({ mode: 'read' });
+          }
+
+          if (state === 'granted') {
             const file = await handle.getFile();
             const url = URL.createObjectURL(file);
             updatedLibrary[i] = { ...asset, url, isOffline: false, handle };
@@ -106,7 +113,8 @@ function RapidCutEditor() {
             updatedLibrary[i] = { ...asset, isOffline: true, handle };
           }
         } catch (e) {
-          updatedLibrary[i] = { ...asset, isOffline: true, handle };
+          console.error('Relink error for', asset.name, e);
+          updatedLibrary[i] = { ...asset, isOffline: true };
         }
       }
     }
@@ -121,15 +129,50 @@ function RapidCutEditor() {
     setIsRestoringMedia(false);
   };
 
+  const checkAndAutoRestore = async (lib: MediaAsset[]) => {
+    // 靜默檢查：如果瀏覽器記住了權限，就自動還原，不驚動使用者
+    const updatedLib = [...lib];
+    const urlMap = new Map<string, string>();
+    let changed = false;
+
+    for (let i = 0; i < updatedLib.length; i++) {
+      const asset = updatedLib[i];
+      const handle = await assetDB.getHandle(asset.id);
+      if (handle) {
+        // @ts-ignore
+        const state = await handle.queryPermission({ mode: 'read' });
+        if (state === 'granted') {
+          const file = await handle.getFile();
+          const url = URL.createObjectURL(file);
+          updatedLib[i] = { ...asset, url, isOffline: false, handle };
+          urlMap.set(asset.id, url);
+          changed = true;
+        } else {
+          updatedLib[i] = { ...asset, isOffline: true, handle };
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      setLibrary(updatedLib);
+      setItems(prev => prev.map(item => {
+        if (item.assetId && urlMap.has(item.assetId)) {
+          return { ...item, url: urlMap.get(item.assetId) };
+        }
+        return item;
+      }));
+    }
+  };
+
   const saveToStorage = useCallback(() => {
     if (isInitialLoad.current || !activeProjectId || isRestoringMedia) return;
     
-    // 儲存時不存 Session URL，只存 Metadata
     const projectData: Project = {
       id: activeProjectId,
       name: projectName,
       lastModified: Date.now(),
-      items: items.map(i => ({ ...i, url: '' })), // 網址不具持久性，清空
+      items: items.map(i => ({ ...i, url: '' })), 
       settings: projectSettings,
       library: library.map(a => ({ ...a, url: '' })) 
     };
@@ -162,33 +205,16 @@ function RapidCutEditor() {
     setActiveProjectId(id);
     setProjectName(data.name);
     setProjectSettings(data.settings || { width: 528, height: 768, fps: 30 });
-    setLibrary(data.library.map(a => ({ ...a, isOffline: true }))); // 預設全部離線，等待 Relink
+    
+    // 初始化時先標記為離線
+    const offlineLibrary = data.library.map(a => ({ ...a, isOffline: true }));
+    setLibrary(offlineLibrary);
     setItems(data.items);
     localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
     setShowProjectModal(false);
     
-    // 自動嘗試非破壞性檢查 (不彈窗)
-    checkMediaHealth(data.library);
-  };
-
-  const checkMediaHealth = async (lib: MediaAsset[]) => {
-    const updatedLib = [...lib];
-    let allHealthy = true;
-    for (let i = 0; i < updatedLib.length; i++) {
-      const handle = await assetDB.getHandle(updatedLib[i].id);
-      if (handle) {
-        // Fix: Added @ts-ignore because queryPermission might not be in standard TypeScript lib
-        // @ts-ignore
-        const state = await handle.queryPermission({ mode: 'read' });
-        if (state !== 'granted') allHealthy = false;
-        updatedLib[i].isOffline = state !== 'granted';
-      } else {
-        allHealthy = false;
-        updatedLib[i].isOffline = true;
-      }
-    }
-    setLibrary(updatedLib);
-    // 如果不健康，則在介面上提示使用者進行 Relink
+    // 立即嘗試靜默恢復
+    await checkAndAutoRestore(offlineLibrary);
   };
 
   useEffect(() => {
@@ -245,7 +271,6 @@ function RapidCutEditor() {
     }
   };
 
-  // Fix: Implemented missing exportProject function
   const exportProject = (id: string) => {
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (!dataJson) return;
@@ -258,22 +283,18 @@ function RapidCutEditor() {
     URL.revokeObjectURL(url);
   };
 
-  // Fix: Implemented missing importProject function
   const importProject = async (file: File) => {
     try {
       const text = await file.text();
       const data = JSON.parse(text) as Project;
       if (!data.id || !data.name) throw new Error('Invalid project file');
-      
       localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + data.id, JSON.stringify(data));
-      
       setProjects(prev => {
         const filtered = prev.filter(p => p.id !== data.id);
         const newList = [...filtered, { id: data.id, name: data.name, lastModified: Date.now() }];
         localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
         return newList;
       });
-      
       await loadProject(data.id);
     } catch (e) {
       console.error('Import failed', e);
@@ -289,14 +310,10 @@ function RapidCutEditor() {
         types: [{ description: 'Video & Audio', accept: { 'video/*': ['.mp4', '.mov', '.webm'], 'audio/*': ['.mp3', '.wav'] } }]
       });
 
-      const imported = [];
       for (const handle of handles) {
         const file = await handle.getFile();
         const assetId = Math.random().toString(36).substr(2, 9);
-        
-        // 儲存 Handle 而非 Blob (不佔空間)
         await assetDB.saveHandle(assetId, handle);
-        
         const url = URL.createObjectURL(file);
         const isAudio = file.type.startsWith('audio/');
         const dur = await new Promise<number>(r => {
@@ -306,7 +323,6 @@ function RapidCutEditor() {
         });
         const asset: MediaAsset = { id: assetId, name: file.name, url, duration: dur, type: isAudio ? 'audio' : 'video', handle, isOffline: false };
         setLibrary(prev => [...prev, asset]);
-        imported.push(asset);
       }
     } catch (e) {
       console.warn('Import cancelled or not supported');
