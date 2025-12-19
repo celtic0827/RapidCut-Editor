@@ -1,14 +1,8 @@
 
 import React, { useRef, useState, useMemo } from 'react';
 import { Plus, UploadCloud, Library, FileVideo } from 'lucide-react';
-import { TrackType, TimelineItem } from './types.ts';
-
-interface MediaAsset {
-  name: string;
-  url: string;
-  duration: number;
-  type: TrackType;
-}
+// Import MediaAsset from types.ts to ensure consistent schema including 'id'
+import { TrackType, TimelineItem, MediaAsset } from './types.ts';
 
 interface MediaBinProps {
   library: MediaAsset[];

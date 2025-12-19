@@ -1,7 +1,8 @@
 
 import React from 'react';
 import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat, Zap, Volume2, VolumeX } from 'lucide-react';
-import { TimelineItem, TrackType } from './types.ts';
+// Import MediaAsset from types.ts to use the standardized interface
+import { TimelineItem, TrackType, MediaAsset } from './types.ts';
 import { 
   LANE_HEIGHT_TEXT, 
   LANE_HEIGHT_VIDEO, 
@@ -37,9 +38,11 @@ interface TimelineProps {
   renderRuler: React.ReactNode[];
   playheadRef: React.RefObject<HTMLDivElement>;
   timelineRef: React.RefObject<HTMLDivElement>;
-  onDropFromLibrary: (asset: { name: string, url: string, duration: number, type: TrackType }, startTime: number) => void;
+  // Fixed: Use MediaAsset type for consistent schema
+  onDropFromLibrary: (asset: MediaAsset, startTime: number) => void;
   onDropExternalFiles: (files: FileList, startTime: number) => void;
-  draggingAsset: {name: string, url: string, duration: number, type: TrackType} | null;
+  // Fixed: Use MediaAsset type for draggingAsset
+  draggingAsset: MediaAsset | null;
   dragOverTime: number | null;
   onDragUpdate: (t: number) => void;
   v1Muted: boolean; // 新增

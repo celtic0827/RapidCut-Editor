@@ -18,6 +18,7 @@ export interface ClipFX {
 
 export interface TimelineItem {
   id: string;
+  assetId?: string; // 對應 IndexedDB 的 ID
   type: TrackType;
   startTime: number;
   duration: number;
@@ -35,8 +36,9 @@ export interface TimelineItem {
 }
 
 export interface MediaAsset {
+  id: string; // 唯一 ID 用於 IndexedDB
   name: string;
-  url: string;
+  url: string; // Session URL
   duration: number;
   type: TrackType;
 }
@@ -63,7 +65,6 @@ export interface FXPreset {
   type: 'shake' | 'full';
 }
 
-// Fixed: Added missing RenderSettings interface required by the Export engine
 export interface RenderSettings {
   filename: string;
   quality: 'low' | 'medium' | 'high';
