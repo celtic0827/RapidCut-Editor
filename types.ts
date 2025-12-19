@@ -57,6 +57,7 @@ export interface ProjectMetadata {
   id: string;
   name: string;
   lastModified: number;
+  thumbnail?: string; // 新增專案縮圖 (Base64)
 }
 
 export interface FXPreset {

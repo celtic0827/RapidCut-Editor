@@ -20,7 +20,7 @@ export function useProjectManager() {
     }
   }, []);
 
-  const saveProject = useCallback((project: Project) => {
+  const saveProject = useCallback((project: Project, thumbnail?: string) => {
     localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + project.id, JSON.stringify({
       ...project,
       items: project.items.map(i => ({ ...i, url: '' })),
@@ -31,9 +31,17 @@ export function useProjectManager() {
       const exists = prev.find(p => p.id === project.id);
       let newList;
       if (exists) {
-        newList = prev.map(p => p.id === project.id ? { ...p, name: project.name, lastModified: Date.now() } : p);
+        newList = prev.map(p => p.id === project.id 
+          ? { 
+              ...p, 
+              name: project.name, 
+              lastModified: Date.now(),
+              thumbnail: thumbnail || p.thumbnail // 如果有新縮圖則更新，否則保留舊的
+            } 
+          : p
+        );
       } else {
-        newList = [...prev, { id: project.id, name: project.name, lastModified: Date.now() }];
+        newList = [...prev, { id: project.id, name: project.name, lastModified: Date.now(), thumbnail }];
       }
       localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
       return newList;
@@ -49,16 +57,13 @@ export function useProjectManager() {
   const deleteProject = useCallback(async (id: string) => {
     const data = getProjectData(id);
     if (data) {
-      // 遍歷專案庫，徹底清除 IndexedDB 中的媒體 Blob
       await Promise.all(data.library.map(asset => 
         assetDB.deleteAsset(asset.id).catch(err => console.error('Failed to delete asset', asset.id, err))
       ));
     }
     
-    // 移除 LocalStorage 的專案配置
     localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     
-    // 更新專案列表
     setProjects(prev => {
       const newList = prev.filter(p => p.id !== id);
       localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
@@ -71,7 +76,6 @@ export function useProjectManager() {
     localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
   }, []);
 
-  // 實裝專案導出
   const exportProject = useCallback((id: string) => {
     const data = getProjectData(id);
     if (!data) return;
@@ -84,17 +88,13 @@ export function useProjectManager() {
     URL.revokeObjectURL(url);
   }, [getProjectData]);
 
-  // 實裝專案導入
   const importProject = useCallback(async (file: File): Promise<string | null> => {
     try {
       const text = await file.text();
       const project: Project = JSON.parse(text);
-      
-      // 重新生成 ID 以防衝突
       const newId = Math.random().toString(36).substr(2, 9);
       project.id = newId;
       project.name = project.name + " (Imported)";
-      
       saveProject(project);
       refreshProjectList();
       return newId;

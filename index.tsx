@@ -94,6 +94,32 @@ function RapidCutEditor() {
     });
   };
 
+  // 擷取縮圖
+  const generateThumbnail = useCallback((): string => {
+    if (!videoRef.current || !items.length) return '';
+    try {
+      const canvas = document.createElement('canvas');
+      // 使用 16:9 或適合專案比例的小尺寸
+      canvas.width = 160;
+      canvas.height = 90;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+      
+      // 繪製背景色
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 如果有影片正在播放，繪製之
+      if (videoRef.current.readyState >= 2) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      }
+      
+      return canvas.toDataURL('image/jpeg', 0.6);
+    } catch (e) {
+      return '';
+    }
+  }, [items]);
+
   const restoreMediaUrls = async (lib: MediaAsset[]) => {
     setIsRestoringMedia(true);
     const updatedLib = [...lib];
@@ -144,6 +170,7 @@ function RapidCutEditor() {
   useEffect(() => {
     if (isInitialLoad.current || !pm.activeProjectId || isRestoringMedia) return;
     const timer = setTimeout(() => {
+      const thumb = generateThumbnail();
       pm.saveProject({
         id: pm.activeProjectId,
         name: projectName,
@@ -151,10 +178,10 @@ function RapidCutEditor() {
         items,
         settings: projectSettings,
         library
-      });
-    }, 1500);
+      }, thumb);
+    }, 2000); // 稍微加長一點讓縮圖更有機會擷取到
     return () => clearTimeout(timer);
-  }, [pm.activeProjectId, projectName, items, projectSettings, library, isRestoringMedia]);
+  }, [pm.activeProjectId, projectName, items, projectSettings, library, isRestoringMedia, generateThumbnail]);
 
   useEffect(() => {
     const initApp = async () => {
@@ -184,7 +211,6 @@ function RapidCutEditor() {
   const handleConfirmDelete = async () => {
     if (!projectToDelete) return;
     setIsDeleting(true);
-    // 直接呼叫 pm.deleteProject，內部會處理資產清除
     await pm.deleteProject(projectToDelete.id);
     if (pm.activeProjectId === projectToDelete.id) {
       createNewProject();
