@@ -1,6 +1,6 @@
+
 import React, { useState, useRef } from 'react';
 import { X, Loader2, CheckCircle2, ShieldCheck, HardDriveDownload, AlertTriangle } from 'lucide-react';
-// Fixed: Updated import path to include .ts extension for consistency across the project
 import { TimelineItem, ProjectSettings, RenderSettings } from './types.ts';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
@@ -12,6 +12,8 @@ interface RenderModalProps {
   projectSettings: ProjectSettings;
   projectDuration: number;
 }
+
+const TRANSITION_DUR = 0.4; // 與 index.tsx 保持一致
 
 export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDuration }: RenderModalProps) => {
   const [status, setStatus] = useState<'idle' | 'loading-wasm' | 'rendering' | 'encoding' | 'completed' | 'error'>('idle');
@@ -30,40 +32,18 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
 
   const loadFFmpeg = async () => {
     if (ffmpegRef.current) return ffmpegRef.current;
-    
     setStatus('loading-wasm');
     const ffmpeg = new FFmpeg();
-    
-    // 使用 ESM 版本核心路徑
     const coreVersion = '0.12.10';
     const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
-    
     try {
-      // 關鍵修復：使用 toBlobURL 確保所有組件都通過 Blob 載入
-      // 這能讓瀏覽器認為腳本是同源的，解決 Vercel 上的跨域 Worker 攔截問題
       const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
       const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
       const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
-
-      await ffmpeg.load({
-        coreURL,
-        wasmURL,
-        workerURL,
-      });
+      await ffmpeg.load({ coreURL, wasmURL, workerURL });
     } catch (err: any) {
-      console.error('FFmpeg Load Error Details:', err);
-      
-      // 針對常見錯誤提供精準診斷
-      let customMsg = "初始化失敗。";
-      if (typeof SharedArrayBuffer === 'undefined') {
-        customMsg = "瀏覽器未啟用 SharedArrayBuffer。請確保部署環境已設置 COOP/COEP 標頭（Vercel 已配置，請重啟或檢查 vercel.json）。";
-      } else if (err.message?.includes('Worker')) {
-        customMsg = "Web Worker 啟動被攔截。請更換為 Chrome 或 Edge 瀏覽器重試。";
-      }
-      
-      throw new Error(customMsg);
+      throw new Error("FFmpeg 初始化失敗，請檢查網路或更換瀏覽器。");
     }
-    
     ffmpegRef.current = ffmpeg;
     return ffmpeg;
   };
@@ -75,32 +55,15 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     const view = new DataView(buffer);
     const channels = [];
     let i, sample, offset = 0, pos = 0;
-
     const setUint16 = (data: number) => { view.setUint16(pos, data, true); pos += 2; };
     const setUint32 = (data: number) => { view.setUint32(pos, data, true); pos += 4; };
-
-    setUint32(0x46464952); // "RIFF"
-    setUint32(length - 8);
-    setUint32(0x45564157); // "WAVE"
-    setUint32(0x20746d66); // "fmt "
-    setUint32(16);
-    setUint16(1); 
-    setUint16(numOfChan);
-    setUint32(abuffer.sampleRate);
-    setUint32(abuffer.sampleRate * 2 * numOfChan);
-    setUint16(numOfChan * 2);
-    setUint16(16);
-    setUint32(0x61746164); // "data"
-    setUint32(length - pos - 4);
-
+    setUint32(0x46464952); setUint32(length - 8); setUint32(0x45564157); setUint32(0x20746d66); setUint32(16); setUint16(1); setUint16(numOfChan); setUint32(abuffer.sampleRate); setUint32(abuffer.sampleRate * 2 * numOfChan); setUint16(numOfChan * 2); setUint16(16); setUint32(0x61746264); setUint32(length - pos - 4);
     for (i = 0; i < abuffer.numberOfChannels; i++) channels.push(abuffer.getChannelData(i));
-
     while (pos < length) {
       for (i = 0; i < numOfChan; i++) {
         sample = Math.max(-1, Math.min(1, channels[i][offset]));
         sample = (sample < 0 ? sample * 0x8000 : sample * 0x7FFF);
-        view.setInt16(pos, sample, true);
-        pos += 2;
+        view.setInt16(pos, sample, true); pos += 2;
       }
       offset++;
     }
@@ -118,10 +81,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const sampleRate = 44100;
       const totalFrames = Math.ceil(projectDuration * fps);
 
-      // --- 1. 音訊導出 ---
+      // --- 1. 音訊導出 (維持原樣) ---
       const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
       const soundItems = items.filter(i => (i.type === 'video' || i.type === 'audio') && i.url);
-      
       for (const item of soundItems) {
         try {
           const res = await fetch(item.url!);
@@ -149,7 +111,6 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const videoClips = items.filter(i => i.type === 'video' && i.url);
       const videoElements = new Map<string, HTMLVideoElement>();
       for (const clip of videoClips) {
-        if (videoElements.has(clip.id)) continue;
         const v = document.createElement('video');
         v.src = clip.url!;
         v.crossOrigin = 'anonymous';
@@ -166,26 +127,61 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
 
-        const activeVideo = items.find(c => c.type === 'video' && currentTime >= c.startTime && currentTime < c.startTime + c.duration);
-        if (activeVideo) {
-          const v = videoElements.get(activeVideo.id)!;
-          v.currentTime = (currentTime - activeVideo.startTime) + activeVideo.trimStart;
+        // 轉場邏輯偵測
+        const incomingClip = items.find(c => 
+          c.type === 'video' && 
+          c.transition === 'blur' && 
+          currentTime >= c.startTime && 
+          currentTime <= c.startTime + TRANSITION_DUR
+        );
+
+        const drawClip = async (clip: TimelineItem, alpha: number, blur: number) => {
+          const v = videoElements.get(clip.id);
+          if (!v) return;
+          v.currentTime = (currentTime - clip.startTime) + clip.trimStart;
           await new Promise(r => { 
             const onSeek = () => { v.removeEventListener('seeked', onSeek); r(null); };
             v.addEventListener('seeked', onSeek);
-            setTimeout(onSeek, 60); 
+            setTimeout(onSeek, 100); // 導出時給予更多 buffer 時間確保畫質
           });
           
           ctx.save();
-          if (activeVideo.fx?.shakeEnabled) {
-             const t = currentTime * activeVideo.fx.shakeFrequency + activeVideo.fx.seed;
-             ctx.translate(Math.sin(t * 7) * activeVideo.fx.shakeIntensity, Math.cos(t * 11) * activeVideo.fx.shakeIntensity);
-             ctx.scale(activeVideo.fx.shakeZoom, activeVideo.fx.shakeZoom);
+          ctx.globalAlpha = alpha;
+          if (blur > 0) ctx.filter = `blur(${blur}px)`;
+          
+          if (clip.fx?.shakeEnabled) {
+             const t = currentTime * clip.fx.shakeFrequency + clip.fx.seed;
+             ctx.translate(Math.sin(t * 7) * clip.fx.shakeIntensity, Math.cos(t * 11) * clip.fx.shakeIntensity);
+             ctx.scale(clip.fx.shakeZoom, clip.fx.shakeZoom);
           }
           ctx.drawImage(v, 0, 0, width, height);
           ctx.restore();
+        };
+
+        if (incomingClip) {
+          const progress = (currentTime - incomingClip.startTime) / TRANSITION_DUR;
+          const outgoingClip = items.find(c => 
+            c.id !== incomingClip.id && 
+            c.type === 'video' && 
+            currentTime >= c.startTime && 
+            currentTime <= c.startTime + c.duration
+          );
+
+          // 1. 繪製退場 (Outgoing)
+          if (outgoingClip) {
+            await drawClip(outgoingClip, 1 - progress, progress * 24);
+          }
+          // 2. 繪製進場 (Incoming)
+          await drawClip(incomingClip, progress, (1 - progress) * 24);
+        } else {
+          // 正常模式
+          const activeClip = items.find(c => c.type === 'video' && currentTime >= c.startTime && currentTime < c.startTime + c.duration);
+          if (activeClip) {
+            await drawClip(activeClip, 1, 0);
+          }
         }
 
+        // 文字渲染
         const activeTexts = items.filter(t => t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration);
         for (const text of activeTexts) {
           ctx.save();
@@ -193,11 +189,13 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.font = '900 64px "Inter", sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
+          ctx.shadowColor = 'rgba(0,0,0,0.5)';
+          ctx.shadowBlur = 10;
           ctx.fillText(text.content?.toUpperCase() || "", width / 2, height / 2);
           ctx.restore();
         }
 
-        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.9));
         if (frameBlob) {
           const frameNum = i.toString().padStart(5, '0');
           const arrayBuffer = await frameBlob.arrayBuffer();
@@ -205,7 +203,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         }
       }
 
-      // --- 3. 編碼 ---
+      // --- 3. 編碼 (維持原樣) ---
       setStatus('encoding');
       await ffmpeg.exec([
         '-framerate', fps.toString(),
@@ -223,27 +221,25 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
 
       const data = await ffmpeg.readFile('output.mp4');
       const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
-      
       const link = document.createElement('a');
       link.href = url;
       link.download = `${settings.filename}.mp4`;
       link.click();
-
       setStatus('completed');
     } catch (err: any) {
-      console.error('RapidCut FFmpeg Error:', err);
+      console.error('Render Error:', err);
       setStatus('error');
-      setErrorMsg(err.message || '渲染核心異常。');
+      setErrorMsg(err.message || '渲染失敗。');
     }
   };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-xl p-4">
-      <div className="w-full max-sm bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="w-full max-w-sm bg-[#1a1a1e] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-zinc-900/50">
           <div className="flex items-center gap-2">
             <HardDriveDownload size={16} className="text-indigo-400" />
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-100">RapidCut FFmpeg Engine</h3>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-100">Export Engine</h3>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X size={18} /></button>
         </div>
@@ -254,24 +250,24 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
                 <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">Vercel 高效渲染模式 (v6)</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">FX Renderer Enabled</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">
-                    已自動配置 COOP/COEP 標頭與 Blob 封裝。這將解鎖多線程加速並避開所有跨域攔截。
+                    已自動將轉場特效加入導出排程。導出過程會根據特效複雜度動態調整幀合成速度。
                   </p>
                 </div>
               </div>
               <div className="text-left">
-                <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">輸出檔案名稱</label>
+                <label className="text-[9px] text-zinc-500 uppercase font-black mb-1.5 block">Filename</label>
                 <input type="text" value={settings.filename} onChange={e => setSettings({ ...settings, filename: e.target.value })} className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500" />
               </div>
-              <button onClick={handleStartRender} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs py-4 rounded-xl uppercase shadow-xl shadow-indigo-600/20 transition-all active:scale-95">極速導出 MP4</button>
+              <button onClick={handleStartRender} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs py-4 rounded-xl uppercase shadow-xl shadow-indigo-600/20 transition-all active:scale-95">Start Export</button>
             </div>
           )}
 
           {status === 'loading-wasm' && (
             <div className="py-10 space-y-4">
               <Loader2 size={24} className="animate-spin text-indigo-400 mx-auto" />
-              <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">初始化 FFmpeg 核心...</p>
+              <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Initializing Core...</p>
             </div>
           )}
 
@@ -289,7 +285,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="space-y-2">
                 <Loader2 size={16} className="animate-spin text-indigo-400 mx-auto" />
                 <p className="text-[10px] font-black uppercase text-zinc-400 tracking-[0.2em]">
-                  {status === 'rendering' ? '正在合成幀數據...' : '正在封裝影音串流...'}
+                  {status === 'rendering' ? 'Synthesizing FX Frames...' : 'Muxing Stream...'}
                 </p>
               </div>
             </div>
@@ -300,9 +296,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center animate-pulse">
                 <CheckCircle2 size={40} className="text-emerald-500" />
               </div>
-              <h4 className="text-white font-black text-sm uppercase tracking-widest">渲染任務成功</h4>
-              <p className="text-[10px] text-zinc-500 uppercase font-bold leading-relaxed">影片已生成並自動下載。</p>
-              <button onClick={onClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase mt-2">關閉</button>
+              <h4 className="text-white font-black text-sm uppercase tracking-widest">Done</h4>
+              <button onClick={onClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase mt-2">Close</button>
             </div>
           )}
 
@@ -310,11 +305,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
             <div className="py-10 flex flex-col items-center gap-4">
               <AlertTriangle size={48} className="text-amber-500" />
               <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg">
-                 <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed">
-                   {errorMsg}
-                 </p>
+                 <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed">{errorMsg}</p>
               </div>
-              <button onClick={() => setStatus('idle')} className="w-full bg-zinc-800 text-white py-3 rounded-xl uppercase text-[10px] font-black mt-4 transition-all hover:bg-zinc-700">重試渲染</button>
+              <button onClick={() => setStatus('idle')} className="w-full bg-zinc-800 text-white py-3 rounded-xl uppercase text-[10px] font-black mt-4 transition-all hover:bg-zinc-700">Retry</button>
             </div>
           )}
         </div>
