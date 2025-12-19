@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Loader2, CheckCircle2, ShieldCheck, HardDriveDownload, AlertTriangle } from 'lucide-react';
-import { TimelineItem, ProjectSettings, RenderSettings } from './types';
+// Fixed: Updated import path to include .ts extension for consistency across the project
+import { TimelineItem, ProjectSettings, RenderSettings } from './types.ts';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
 

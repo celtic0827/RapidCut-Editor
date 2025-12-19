@@ -8,12 +8,6 @@ export interface ProjectSettings {
   fps: number;
 }
 
-export interface RenderSettings {
-  filename: string;
-  quality: 'low' | 'medium' | 'high';
-  bitrate: number;
-}
-
 export interface ClipFX {
   shakeIntensity: number;
   shakeFrequency: number;
@@ -36,8 +30,30 @@ export interface TimelineItem {
   effect?: TitleEffect;
   color: string;
   volume?: number;
-  muted?: boolean; // 新增：個別片段靜音
+  muted?: boolean;
   fx?: ClipFX;
+}
+
+export interface MediaAsset {
+  name: string;
+  url: string;
+  duration: number;
+  type: TrackType;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  lastModified: number;
+  items: TimelineItem[];
+  settings: ProjectSettings;
+  library: MediaAsset[];
+}
+
+export interface ProjectMetadata {
+  id: string;
+  name: string;
+  lastModified: number;
 }
 
 export interface FXPreset {
@@ -45,4 +61,11 @@ export interface FXPreset {
   name: string;
   fx: ClipFX;
   type: 'shake' | 'full';
+}
+
+// Fixed: Added missing RenderSettings interface required by the Export engine
+export interface RenderSettings {
+  filename: string;
+  quality: 'low' | 'medium' | 'high';
+  bitrate: number;
 }

@@ -1,9 +1,11 @@
 
 import React from 'react';
-import { Clapperboard, Settings2, Download } from 'lucide-react';
-import { ProjectSettings } from './types';
+import { Clapperboard, Settings2, Download, Folder } from 'lucide-react';
 
 interface HeaderProps {
+  projectName: string;
+  onProjectNameChange: (name: string) => void;
+  onOpenProjectManager: () => void;
   onSettingsClick: () => void;
   onBrandClick: () => void;
   onRenderClick: () => void;
@@ -18,21 +20,43 @@ const formatTime = (t: number) => {
   return `${mins}:${secs}:${ms}`;
 };
 
-export const Header = ({ onSettingsClick, onBrandClick, onRenderClick, timeDisplayRef, projectDuration }: HeaderProps) => (
+export const Header = ({ 
+  projectName, onProjectNameChange, onOpenProjectManager,
+  onSettingsClick, onBrandClick, onRenderClick, timeDisplayRef, projectDuration 
+}: HeaderProps) => (
   <header className="h-8 flex items-center justify-between px-3 border-b border-black bg-[#151518] shrink-0">
     <div className="flex items-center gap-4">
       <div className="flex items-center gap-1.5 px-2 bg-indigo-600/20 py-0.5 rounded cursor-pointer group" onClick={onBrandClick}>
         <Clapperboard size={14} className="text-indigo-500 group-hover:text-indigo-400 transition-colors" />
         <span className="font-black text-indigo-100 text-[10px] tracking-tight uppercase">RAPIDCUT</span>
       </div>
+      
+      <div className="h-4 w-[1px] bg-white/5 mx-1" />
+
+      <div className="flex items-center gap-2">
+        <button 
+          onClick={onOpenProjectManager}
+          className="p-1 text-zinc-500 hover:text-indigo-400 transition-colors"
+          title="Project Manager"
+        >
+          <Folder size={12} />
+        </button>
+        <input 
+          type="text"
+          value={projectName}
+          onChange={(e) => onProjectNameChange(e.target.value)}
+          className="bg-transparent border-none text-[10px] font-black text-zinc-300 uppercase tracking-tighter focus:outline-none focus:text-white w-32 truncate"
+          placeholder="Untitled Project"
+        />
+      </div>
+
       <div className="flex items-center gap-3 text-[9px] uppercase font-bold tracking-widest text-zinc-500">
-        <button className="hover:text-zinc-200 transition-colors">File</button>
-        <button className="hover:text-zinc-200 transition-colors">Edit</button>
         <button onClick={onSettingsClick} className="hover:text-indigo-400 flex items-center gap-1 transition-colors">
-          <Settings2 size={10} /> Project
+          <Settings2 size={10} /> Settings
         </button>
       </div>
     </div>
+    
     <div className="flex items-center gap-3">
       <div className="bg-black/40 px-2 py-0.5 rounded border border-white/5 flex items-center gap-1.5 font-mono text-[10px] tabular-nums">
         <span ref={timeDisplayRef} className="text-zinc-100 font-bold">00:00:00</span>
