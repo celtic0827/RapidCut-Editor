@@ -40,7 +40,6 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
     
     ffmpeg.on('log', ({ message }) => {
       console.log('[FFmpeg Runtime]', message);
-      // Optional: set stage to last few lines of log for better UX
       if (message.includes('frame=')) {
         setStage(`編碼中: ${message.split('frame=')[1].split('fps=')[0].trim()} 影格`);
       }
@@ -52,18 +51,14 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       }
     });
 
-    // 使用 ESM 版本，解決 UMD 下 Worker 路徑 404 的問題
     const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
     
     try {
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        // 在 ESM 模式下，worker 通常由 core 自動處理，或者明確指定
         workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
       });
-      
-      console.log('FFmpeg Core Loaded successfully');
     } catch (err: any) {
       console.error('FFmpeg Load Error:', err);
       throw new Error("無法載入 WebAssembly 核心。請確認瀏覽器支援 SharedArrayBuffer。");
@@ -113,35 +108,41 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const fps = projectSettings.fps;
       const totalFrames = Math.ceil(projectDuration * fps);
 
+      if (totalFrames <= 0) throw new Error('No frames to render');
+
       // --- 1. 音訊處理 ---
       setStage('正在準備音軌素材...');
+      let hasAudio = false;
       try {
         const sampleRate = 44100;
         const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
         const soundItems = items.filter(i => (i.type === 'video' || i.type === 'audio') && i.url);
         
-        for (const item of soundItems) {
-          try {
-            const res = await fetch(item.url!);
-            const buf = await res.arrayBuffer();
-            const decoded = await offlineCtx.decodeAudioData(buf);
-            const source = offlineCtx.createBufferSource();
-            source.buffer = decoded;
-            const gain = offlineCtx.createGain();
-            gain.gain.value = (item.muted) ? 0 : (item.volume ?? 1.0);
-            source.connect(gain);
-            gain.connect(offlineCtx.destination);
-            source.start(item.startTime, item.trimStart, item.duration);
-          } catch (e) { console.warn('跳過損壞的音訊素材'); }
+        if (soundItems.length > 0) {
+          for (const item of soundItems) {
+            try {
+              const res = await fetch(item.url!);
+              const buf = await res.arrayBuffer();
+              const decoded = await offlineCtx.decodeAudioData(buf);
+              const source = offlineCtx.createBufferSource();
+              source.buffer = decoded;
+              const gain = offlineCtx.createGain();
+              gain.gain.value = (item.muted) ? 0 : (item.volume ?? 1.0);
+              source.connect(gain);
+              gain.connect(offlineCtx.destination);
+              source.start(item.startTime, item.trimStart, item.duration);
+              hasAudio = true;
+            } catch (e) { console.warn('跳過損壞的音訊素材'); }
+          }
+          if (hasAudio) {
+            const mixedAudio = await offlineCtx.startRendering();
+            const wavData = bufferToWav(mixedAudio);
+            await ffmpeg.writeFile('audio.wav', wavData);
+          }
         }
-        const mixedAudio = await offlineCtx.startRendering();
-        const wavData = bufferToWav(mixedAudio);
-        
-        await ffmpeg.writeFile('audio.wav', wavData);
       } catch (e) {
-        console.warn('音訊渲染異常，將生成無聲影片', e);
-        // 生成一個極短的空白 WAV 以免 FFmpeg 報錯
-        await ffmpeg.writeFile('audio.wav', new Uint8Array(100)); 
+        console.warn('音訊渲染異常', e);
+        hasAudio = false;
       }
 
       // --- 2. 影格合成 ---
@@ -154,7 +155,6 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const videoClips = items.filter(i => i.type === 'video' && i.url);
       const videoElements = new Map<string, HTMLVideoElement>();
       
-      // 預載影片元件
       for (const clip of videoClips) {
         const v = document.createElement('video');
         v.src = clip.url!;
@@ -172,9 +172,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const drawClip = async (clip: TimelineItem, alpha: number, blur: number, currentTime: number) => {
         const v = videoElements.get(clip.id);
         if (!v || v.readyState < 2) return;
-        
         const targetTime = Math.max(0, (currentTime - clip.startTime) + clip.trimStart);
-        // 優化：只有在差距較大時才執行 seek，減少等待時間
         if (Math.abs(v.currentTime - targetTime) > 0.04) {
           v.currentTime = targetTime;
           await new Promise(r => { 
@@ -183,11 +181,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
             setTimeout(onSeek, 800); 
           });
         }
-        
         ctx.save();
         ctx.globalAlpha = alpha;
         if (blur > 0) ctx.filter = `blur(${Math.min(blur, 50)}px)`;
-        
         if (clip.fx?.shakeEnabled) {
            const t = currentTime * (clip.fx.shakeFrequency || 1) + (clip.fx.seed || 0);
            ctx.translate(Math.sin(t * 7) * (clip.fx.shakeIntensity || 0), Math.cos(t * 11) * (clip.fx.shakeIntensity || 0));
@@ -200,14 +196,12 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       for (let i = 0; i < totalFrames; i++) {
         if (abortController.current) break;
         const currentTime = i / fps;
-        const currentProgress = Math.round((i / totalFrames) * 85);
-        setProgress(currentProgress);
-        setStage(`正在合成影格: ${i}/${totalFrames} (${Math.round((i / totalFrames) * 100)}%)`);
+        setProgress(Math.round((i / totalFrames) * 85));
+        setStage(`正在合成影格: ${i}/${totalFrames}`);
 
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
 
-        // 處理轉場 (Blur)
         const incomingClip = items.find(c => 
           c.type === 'video' && 
           c.transition === 'blur' && 
@@ -230,7 +224,6 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           if (activeClip) await drawClip(activeClip, 1, 0, currentTime);
         }
 
-        // 處理文字
         const activeTexts = items.filter(t => t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration);
         for (const text of activeTexts) {
           ctx.save();
@@ -245,37 +238,51 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         }
 
         const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.8));
-        if (frameBlob) {
-          const ab = await frameBlob.arrayBuffer();
-          await ffmpeg.writeFile(`f_${i.toString().padStart(5, '0')}.jpg`, new Uint8Array(ab));
-        }
+        if (!frameBlob) throw new Error(`Failed to generate frame at index ${i}`);
+        
+        const ab = await frameBlob.arrayBuffer();
+        // 核心修正：使用連續的無前綴零檔名，並確保執行順序
+        await ffmpeg.writeFile(`f_${i}.jpg`, new Uint8Array(ab));
       }
 
       // --- 3. 最終編碼 ---
       setStage('影格合成完畢，開始 H.264 編碼...');
       setStatus('encoding');
       
-      await ffmpeg.exec([
+      const execArgs = [
         '-framerate', fps.toString(),
-        '-i', 'f_%05d.jpg',
-        '-i', 'audio.wav',
+        '-start_number', '0',
+        '-i', 'f_%d.jpg',
+      ];
+
+      if (hasAudio) {
+        execArgs.push('-i', 'audio.wav');
+      }
+
+      execArgs.push(
         '-c:v', 'libx264',
         '-b:v', `${settings.bitrate}`,
-        '-preset', 'ultrafast', // 速度優先
+        '-preset', 'ultrafast',
         '-pix_fmt', 'yuv420p',
-        '-shortest', // 以較短的軌道為主（音訊或影片）
+        '-movflags', 'faststart',
         '-y', 'output.mp4'
-      ]);
+      );
 
-      setStage('導出完成，正在準備下載...');
+      await ffmpeg.exec(execArgs);
+
+      setStage('導出完成，正在讀取檔案...');
       const data = await ffmpeg.readFile('output.mp4');
+      
+      if (!data || (data as Uint8Array).length === 0) {
+        throw new Error('編碼後的檔案為空 (Empty output.mp4)');
+      }
+
       const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
       const link = document.createElement('a');
       link.href = url;
       link.download = `${settings.filename}.mp4`;
       link.click();
       
-      // 延遲清理檔案，確保導出完成
       setTimeout(async () => {
         try {
           const files = await ffmpeg.listDir('.');
@@ -285,7 +292,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
             }
           }
         } catch (e) {}
-      }, 1000);
+      }, 2000);
 
       setStatus('completed');
     } catch (err: any) {
@@ -324,9 +331,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
                 <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">ESM Core Ready</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">FS Fix Applied</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold text-pretty">
-                    已切換至 ESM 核心以修正 404 與多執行緒加載問題。
+                    已修正虛擬檔案系統寫入邏輯，確保連續影格索引。
                   </p>
                 </div>
               </div>
@@ -392,7 +399,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                 <AlertTriangle size={32} className="text-rose-500" />
               </div>
               <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg max-w-[280px]">
-                 <p className="text-[8px] text-rose-400 font-bold uppercase tracking-widest text-center mb-2">{stage}</p>
+                 <p className="text-[8px] text-rose-400 font-bold uppercase tracking-widest text-center mb-2">FS ERROR / RENDER FAILED</p>
                  <p className="text-[9px] text-rose-100 font-bold uppercase tracking-tight text-center">{errorMsg}</p>
               </div>
               <div className="flex flex-col gap-2 w-full mt-4">
