@@ -42,6 +42,14 @@ const TimelineUtils = {
     return { time: this.round(time), snapped: false };
   },
   getClipAtTime(items: TimelineItem[], time: number): TimelineItem | undefined {
+    // 優先回傳有轉場且正在轉場中的 clip
+    const transitionClip = items.find(i => 
+      i.type === 'video' && 
+      i.transition === 'blur' && 
+      time >= i.startTime && 
+      time <= i.startTime + TRANSITION_DUR
+    );
+    if (transitionClip) return transitionClip;
     return items.find(i => i.type === 'video' && time >= i.startTime && time <= i.startTime + i.duration + 0.001);
   }
 };
@@ -74,7 +82,7 @@ function RapidCutEditor() {
 
   const playheadRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const videoSecRef = useRef<HTMLVideoElement>(null); // 次要影片槽位
+  const videoSecRef = useRef<HTMLVideoElement>(null); 
   const audioRef = useRef<HTMLAudioElement>(null);
   const timeDisplayRef = useRef<HTMLSpanElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -113,7 +121,7 @@ function RapidCutEditor() {
         const blob = await assetDB.getAsset(asset.id);
         if (blob) {
           const url = URL.createObjectURL(blob);
-          updatedLib[i] = { ...asset, url, iOoffline: false };
+          updatedLib[i] = { ...asset, url, isOffline: false };
           urlMap.set(asset.id, url);
         } else { updatedLib[i] = { ...asset, isOffline: true }; }
       } catch (e) { updatedLib[i] = { ...asset, isOffline: true }; }
@@ -198,7 +206,6 @@ function RapidCutEditor() {
     const a = audioRef.current;
     if (!vPrimary || !vSecondary) return;
 
-    // 檢查轉場
     const currentClip = TimelineUtils.getClipAtTime(items, t);
     let inTransition = false;
     let progress = 0;
@@ -213,11 +220,17 @@ function RapidCutEditor() {
     }
 
     if (inTransition && currentClip) {
-      const prevClip = items.find(i => i.type === 'video' && Math.abs((i.startTime + i.duration) - currentClip.startTime) < 0.1);
+      // 尋找「正在結束」的前一個片段
+      const prevClip = items.find(i => 
+        i.id !== currentClip.id && 
+        i.type === 'video' && 
+        t >= i.startTime && 
+        t <= i.startTime + i.duration
+      );
       
-      // 主影片槽位 (進場影片)
+      // 主影片槽位 (進場中的影片 B)
       const targetB = (t - currentClip.startTime) + (currentClip.trimStart || 0);
-      if (vPrimary.src !== currentClip.url) {
+      if (vPrimary.src !== (currentClip.url || '')) {
         vPrimary.src = currentClip.url || '';
         vPrimary.onloadedmetadata = () => { vPrimary.currentTime = targetB; if (isPlaying) vPrimary.play().catch(()=>{}); };
       } else {
@@ -225,7 +238,7 @@ function RapidCutEditor() {
         if (isPlaying && vPrimary.paused) vPrimary.play().catch(()=>{});
       }
 
-      // 次要影片槽位 (退場影片)
+      // 次要影片槽位 (退場中的影片 A)
       if (prevClip && prevClip.url) {
         const targetA = (t - prevClip.startTime) + (prevClip.trimStart || 0);
         if (vSecondary.src !== prevClip.url) {
@@ -241,7 +254,6 @@ function RapidCutEditor() {
       }
       setTransProgress(progress);
     } else {
-      // 正常播放模式
       setTransProgress(null);
       vSecondary.style.display = 'none';
       if (currentClip && currentClip.url) {
@@ -264,7 +276,6 @@ function RapidCutEditor() {
       }
     }
 
-    // 音訊處理 (維持 A1 軌道)
     if (a) {
       const audioClip = items.find(i => i.type === 'audio' && t >= i.startTime && t <= i.startTime + i.duration + 0.001);
       if (audioClip && audioClip.url) {
@@ -305,20 +316,41 @@ function RapidCutEditor() {
   }, [isPlaying, isLooping, items, syncUI, syncMedia, trimPreviewTime]);
 
   const addItem = (item: TimelineItem) => setItems(prev => [...prev, item]);
-  const updateItem = (id: string, updates: Partial<TimelineItem>) => setItems(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i));
+  
+  const updateItem = (id: string, updates: Partial<TimelineItem>) => {
+    setItems(prev => {
+      const item = prev.find(i => i.id === id);
+      if (!item) return prev;
+      
+      // 達文西對齊邏輯：如果開啟轉場，嘗試與前一個片段自動重疊
+      if (updates.transition === 'blur' && item.transition !== 'blur') {
+        const sortedVideos = prev.filter(v => v.type === 'video').sort((a,b) => a.startTime - b.startTime);
+        const currentIndex = sortedVideos.findIndex(v => v.id === id);
+        if (currentIndex > 0) {
+          const prevClip = sortedVideos[currentIndex - 1];
+          // 檢查是否鄰接 (差距小於 0.1s)
+          if (Math.abs(item.startTime - (prevClip.startTime + prevClip.duration)) < 0.1) {
+            const forcedStartTime = Math.max(0, item.startTime - TRANSITION_DUR);
+            const forcedTrimStart = (item.trimStart || 0); // 這裡不增加 trimStart，而是讓 B 片段提前開始，與 A 片段末尾重疊
+            return prev.map(i => i.id === id ? { ...i, ...updates, startTime: forcedStartTime, duration: i.duration + TRANSITION_DUR, trimStart: forcedTrimStart } : i);
+          }
+        }
+      }
+      
+      return prev.map(i => i.id === id ? { ...i, ...updates } : i);
+    });
+  };
+
   const deleteItem = (id: string) => setItems(prev => prev.filter(i => i.id !== id));
   
-  // Define onDragUpdate to fix the "Cannot find name 'onDragUpdate'" error
-  const onDragUpdate = useCallback((t: number) => {
-    setDragOverTime(t);
-  }, []);
+  const onDragUpdate = useCallback((t: number) => { setDragOverTime(t); }, []);
 
   const splitItem = (id: string, time: number) => {
     setItems(prev => {
       const target = prev.find(i => i.id === id);
       if (!target || time <= target.startTime || time >= target.startTime + target.duration) return prev;
       const splitRel = time - target.startTime;
-      const newItem: TimelineItem = { ...target, id: Math.random().toString(), startTime: time, duration: target.duration - splitRel, trimStart: (target.trimStart || 0) + splitRel };
+      const newItem: TimelineItem = { ...target, id: Math.random().toString(), startTime: time, duration: target.duration - splitRel, trimStart: (target.trimStart || 0) + splitRel, transition: 'none' };
       return [...prev.map(i => i.id === id ? { ...i, duration: splitRel } : i), newItem];
     });
   };
