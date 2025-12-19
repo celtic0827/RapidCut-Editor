@@ -1,6 +1,6 @@
 
 import React, { useState, useRef } from 'react';
-import { X, Loader2, CheckCircle2, ShieldCheck, HardDriveDownload, AlertTriangle, Cpu, Globe } from 'lucide-react';
+import { X, Loader2, CheckCircle2, ShieldCheck, HardDriveDownload, AlertTriangle, Cpu, Globe, Info } from 'lucide-react';
 import { TimelineItem, ProjectSettings, RenderSettings } from './types.ts';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
@@ -17,12 +17,13 @@ const TRANSITION_DUR = 0.4;
 
 export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDuration }: RenderModalProps) => {
   const [status, setStatus] = useState<'idle' | 'loading-wasm' | 'rendering' | 'encoding' | 'completed' | 'error'>('idle');
+  const [stage, setStage] = useState('');
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [settings, setSettings] = useState<RenderSettings>({
     filename: `RapidCut_Export_${new Date().toISOString().slice(0, 10)}`,
     quality: 'high',
-    bitrate: 10000000 
+    bitrate: 8000000 
   });
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
@@ -31,15 +32,21 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   if (!isOpen) return null;
 
   const loadFFmpeg = async () => {
-    // 優先檢查安全環境
     if (!window.crossOriginIsolated) {
-      console.error("Cross-Origin Isolation is not enabled.");
-      throw new Error("伺服器未開啟 COOP/COEP 安全標頭。FFmpeg 無法在不安全的環境下執行多執行緒運算。");
+      throw new Error("Cross-Origin Isolation 未啟用。請確認伺服器標頭設定正確。");
     }
 
     if (ffmpegRef.current) return ffmpegRef.current;
+    
+    setStage('正在初始化核心...');
     setStatus('loading-wasm');
     const ffmpeg = new FFmpeg();
+    
+    // 監聽日誌以便偵錯
+    ffmpeg.on('log', ({ message }) => {
+      console.debug('[FFmpeg]', message);
+    });
+
     const coreVersion = '0.12.10';
     const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
     
@@ -50,7 +57,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       await ffmpeg.load({ coreURL, wasmURL, workerURL });
     } catch (err: any) {
       console.error('FFmpeg Load Error:', err);
-      throw new Error("無法從 CDN 載入編碼引擎。請檢查網路連線或關閉廣告攔截器。");
+      throw new Error("無法加載 FFmpeg 核心，請檢查網路連接或瀏覽器 WebAssembly 支持。");
     }
     
     ffmpegRef.current = ffmpeg;
@@ -82,7 +89,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   const handleStartRender = async () => {
     if (projectDuration <= 0) {
       setStatus('error');
-      setErrorMsg('專案時長不能為 0。');
+      setErrorMsg('專案時長無效。');
       return;
     }
 
@@ -97,7 +104,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const fps = projectSettings.fps;
       const totalFrames = Math.ceil(projectDuration * fps);
 
-      // --- 1. 音訊 ---
+      // --- 1. 音訊渲染 ---
+      setStage('正在混合音軌...');
       try {
         const sampleRate = 44100;
         const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
@@ -115,17 +123,18 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
             source.connect(gain);
             gain.connect(offlineCtx.destination);
             source.start(item.startTime, item.trimStart, item.duration);
-          } catch (e) { console.warn('音訊素材載入失敗:', item.name); }
+          } catch (e) { console.warn('音訊加載跳過:', item.name); }
         }
         const mixedAudio = await offlineCtx.startRendering();
         const wavData = bufferToWav(mixedAudio);
         await ffmpeg.writeFile('audio.wav', wavData);
       } catch (e) {
-        console.warn('音訊混合失敗，以靜音代替', e);
+        console.warn('音訊處理失敗，生成靜音軌', e);
         await ffmpeg.writeFile('audio.wav', new Uint8Array(44)); 
       }
 
-      // --- 2. 影像 ---
+      // --- 2. 影像渲染 ---
+      setStage('正在合成影格...');
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
@@ -134,16 +143,16 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const videoClips = items.filter(i => i.type === 'video' && i.url);
       const videoElements = new Map<string, HTMLVideoElement>();
       
+      // 預載影片
       for (const clip of videoClips) {
         const v = document.createElement('video');
         v.src = clip.url!;
         v.crossOrigin = 'anonymous';
         v.muted = true;
-        v.preload = 'auto';
         await new Promise(r => { 
-          v.onloadedmetadata = r; 
-          v.onerror = () => { console.warn('影像素材加載異常:', clip.name); r(null); }; 
-          setTimeout(r, 4000); 
+          v.onloadeddata = r; 
+          v.onerror = r; 
+          setTimeout(r, 5000); 
         });
         videoElements.set(clip.id, v);
       }
@@ -158,7 +167,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           await new Promise(r => { 
             const onSeek = () => { v.removeEventListener('seeked', onSeek); r(null); };
             v.addEventListener('seeked', onSeek);
-            setTimeout(onSeek, 500); // 增加逾時等待，確保穩定性
+            setTimeout(onSeek, 600); // 尋軌緩衝
           });
         }
         
@@ -183,6 +192,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
 
+        // 轉場與層級繪製
         const incomingClip = items.find(c => 
           c.type === 'video' && 
           c.transition === 'blur' && 
@@ -219,7 +229,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.restore();
         }
 
-        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.85));
         if (frameBlob) {
           const frameNum = i.toString().padStart(5, '0');
           const ab = await frameBlob.arrayBuffer();
@@ -227,7 +237,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         }
       }
 
-      // --- 3. 編碼 ---
+      // --- 3. 影片編碼 ---
+      setStage('正在進行最終編碼...');
       setStatus('encoding');
       await ffmpeg.exec([
         '-framerate', fps.toString(),
@@ -241,16 +252,17 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       ]);
 
       const data = await ffmpeg.readFile('output.mp4');
-      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
+      // 重要修復：不要使用 .buffer，直接傳入 Uint8Array
+      const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
       const link = document.createElement('a');
       link.href = url;
       link.download = `${settings.filename}.mp4`;
       link.click();
       setStatus('completed');
     } catch (err: any) {
-      console.error('Render Engine Error:', err);
+      console.error('Render failure:', err);
       setStatus('error');
-      setErrorMsg(err.message || '發生未知錯誤，請確認瀏覽器支援 SharedArrayBuffer 且標頭已開啟。');
+      setErrorMsg(err.message || '發生未知錯誤，請檢查瀏覽器控制台日誌。');
     }
   };
 
@@ -260,7 +272,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-zinc-900/50">
           <div className="flex items-center gap-2">
             <Cpu size={16} className="text-indigo-400" />
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-100">Render Engine</h3>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-100">Export Engine</h3>
           </div>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X size={18} /></button>
         </div>
@@ -272,9 +284,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                 <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-start gap-3 text-left">
                   <Globe size={16} className="text-rose-400 mt-0.5" />
                   <div className="space-y-1">
-                    <p className="text-[10px] text-rose-400 font-black uppercase tracking-wider">Security Barrier Detected</p>
+                    <p className="text-[10px] text-rose-400 font-black uppercase tracking-wider">Isolation Barrier</p>
                     <p className="text-[9px] text-rose-500/70 leading-relaxed uppercase font-bold">
-                      瀏覽器安全性未通過 (Isolating: No)。FFmpeg 需要 HTTPS 或正確的本地標頭方可運行。
+                      Vercel 安全標頭未生效。請確認 vercel.json 已包含 Cross-Origin-Embedder-Policy: require-corp。
                     </p>
                   </div>
                 </div>
@@ -283,9 +295,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
                 <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">Engine Ready</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">Hardware Acceleration</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">
-                    解析度已自動對齊偶數。渲染期間請勿切換瀏覽器視窗，以免背景節能功能中斷編碼。
+                    專案寬高已自動修復為偶數（{Math.floor(projectSettings.width/2)*2}x{Math.floor(projectSettings.height/2)*2}）以確保編碼器兼容性。
                   </p>
                 </div>
               </div>
@@ -309,7 +321,10 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           {status === 'loading-wasm' && (
             <div className="py-10 space-y-4 text-center">
               <Loader2 size={24} className="animate-spin text-indigo-400 mx-auto" />
-              <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Loading WASM Core...</p>
+              <div className="space-y-1">
+                <p className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">WASM Pipeline</p>
+                <p className="text-[8px] text-zinc-600 uppercase font-bold tracking-tighter">{stage}</p>
+              </div>
             </div>
           )}
 
@@ -318,7 +333,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="relative w-32 h-32">
                 <svg className="w-full h-full -rotate-90">
                   <circle cx="64" cy="64" r="58" stroke="#27272a" strokeWidth="8" fill="none" />
-                  <circle cx="64" cy="64" r="58" stroke="#6366f1" strokeWidth="8" fill="none" strokeDasharray="364.4" strokeDashoffset={364.4 - (364.4 * (status === 'encoding' ? 85 + (progress/100*15) : progress)) / 100} className="transition-all duration-300" />
+                  <circle cx="64" cy="64" r="58" stroke="#6366f1" strokeWidth="8" fill="none" strokeDasharray="364.4" strokeDashoffset={364.4 - (364.4 * (status === 'encoding' ? 95 : progress)) / 100} className="transition-all duration-300" />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
                   <span className="text-2xl font-black text-white">{status === 'encoding' ? '90%' : `${progress}%`}</span>
@@ -326,30 +341,36 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               </div>
               <div className="space-y-2">
                 <Loader2 size={16} className="animate-spin text-indigo-400 mx-auto" />
-                <p className="text-[10px] font-black uppercase text-zinc-400 tracking-[0.2em]">
-                  {status === 'rendering' ? 'Synthesizing Layers...' : 'Muxing Streams...'}
-                </p>
+                <p className="text-[10px] font-black uppercase text-zinc-400 tracking-[0.2em]">{stage}</p>
               </div>
             </div>
           )}
 
           {status === 'completed' && (
             <div className="py-10 flex flex-col items-center gap-6">
-              <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center animate-bounce">
+              <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(16,185,129,0.1)]">
                 <CheckCircle2 size={40} className="text-emerald-500" />
               </div>
-              <h4 className="text-white font-black text-sm uppercase tracking-widest">Done</h4>
-              <button onClick={onClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase mt-2">Back to Project</button>
+              <h4 className="text-white font-black text-sm uppercase tracking-widest">Success</h4>
+              <button onClick={onClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase mt-2">Finish</button>
             </div>
           )}
 
           {status === 'error' && (
             <div className="py-10 flex flex-col items-center gap-4">
-              <AlertTriangle size={48} className="text-rose-500" />
-              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg max-w-[280px]">
-                 <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed text-center">{errorMsg}</p>
+              <div className="w-16 h-16 bg-rose-500/10 rounded-full flex items-center justify-center">
+                <AlertTriangle size={32} className="text-rose-500" />
               </div>
-              <button onClick={() => setStatus('idle')} className="w-full bg-zinc-800 text-white py-3 rounded-xl uppercase text-[10px] font-black mt-4 transition-all hover:bg-zinc-700">Retry</button>
+              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg max-w-[280px]">
+                 <p className="text-[8px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed text-center mb-2">Stage: {stage}</p>
+                 <p className="text-[9px] text-rose-100 font-bold uppercase tracking-tight text-center">{errorMsg}</p>
+              </div>
+              <div className="flex flex-col gap-2 w-full mt-4">
+                <button onClick={() => setStatus('idle')} className="w-full bg-indigo-600 text-white py-3 rounded-xl uppercase text-[10px] font-black transition-all hover:bg-indigo-500">Go Back</button>
+                <a href="https://vercel.com/docs/concepts/functions/serverless-functions#cross-origin-resource-sharing" target="_blank" rel="noreferrer" className="text-[7px] text-zinc-600 uppercase font-black hover:text-zinc-400 flex items-center justify-center gap-1">
+                  <Info size={8} /> Header Support Guide
+                </a>
+              </div>
             </div>
           )}
         </div>
