@@ -6,6 +6,7 @@ import { TimelineItem, ProjectSettings, Project, ProjectMetadata, MediaAsset } f
 import { ProjectSettingsModal } from './ProjectSettingsModal.tsx';
 import { RenderModal } from './RenderModal.tsx';
 import { ProjectManagerModal } from './ProjectManagerModal.tsx';
+import { DeleteConfirmModal } from './DeleteConfirmModal.tsx';
 import { Header } from './Header.tsx';
 import { MediaBin } from './MediaBin.tsx';
 import { StylePalette } from './StylePalette.tsx';
@@ -66,6 +67,8 @@ function RapidCutEditor() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRenderModal, setShowRenderModal] = useState(false);
   const [showProjectModal, setShowProjectModal] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<ProjectMetadata | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isRestoringMedia, setIsRestoringMedia] = useState(false);
   
   const [draggingAsset, setDraggingAsset] = useState<any | null>(null);
@@ -80,8 +83,6 @@ function RapidCutEditor() {
   const dragInfoRef = useRef<any>(null);
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
-
-  // --- Linked Media Logic (持久化權限優化) ---
 
   const relinkAllMedia = async () => {
     setIsRestoringMedia(true);
@@ -246,50 +247,36 @@ function RapidCutEditor() {
     setShowProjectModal(false);
   };
 
-  const deleteProject = async (id: string) => {
-    const targetProjectName = projects.find(p => p.id === id)?.name || 'this project';
-    if (!window.confirm(`Are you sure you want to delete "${targetProjectName}"? This will also remove links to its media assets.`)) {
-      return;
-    }
+  const handleConfirmDelete = async () => {
+    if (!projectToDelete) return;
+    setIsDeleting(true);
+    const id = projectToDelete.id;
 
-    // 1. 從 IndexedDB 刪除所有檔案句柄
-    const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-    if (dataJson) {
-      const data = JSON.parse(dataJson) as Project;
-      for (const asset of data.library) {
-        try {
-          await assetDB.deleteHandle(asset.id);
-        } catch (e) {
-          console.error('Failed to delete asset handle', asset.id, e);
+    try {
+      const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
+      if (dataJson) {
+        const data = JSON.parse(dataJson) as Project;
+        // 使用 Promise.all 並行刪除，加速處理流程
+        await Promise.all(data.library.map(asset => assetDB.deleteHandle(asset.id).catch(() => {})));
+      }
+
+      localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
+      const newList = projects.filter(p => p.id !== id);
+      setProjects(newList);
+      localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
+
+      if (activeProjectId === id) {
+        if (newList.length > 0) {
+          await loadProject(newList[0].id);
+        } else {
+          createNewProject();
         }
       }
-    }
-
-    // 2. 移除 LocalStorage 內容
-    localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-
-    // 3. 更新專案列表
-    const newList = projects.filter(p => p.id !== id);
-    setProjects(newList);
-    localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
-
-    // 4. 如果刪除的是目前開啟的專案，則跳轉
-    if (activeProjectId === id) {
-      if (newList.length > 0) {
-        await loadProject(newList[0].id);
-      } else {
-        // 如果沒有其他專案了，創建一個全新的
-        const newId = Math.random().toString(36).substr(2, 9);
-        setActiveProjectId(newId);
-        setProjectName('New Project 1');
-        setItems([]);
-        setLibrary([]);
-        setProjectSettings({ width: 528, height: 768, fps: 30 });
-        localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, newId);
-        // 注意：這裡不呼叫 saveToStorage，因為它是 useEffect 驅動的，但我們會確保清單正確
-        localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify([{ id: newId, name: 'New Project 1', lastModified: Date.now() }]));
-        setProjects([{ id: newId, name: 'New Project 1', lastModified: Date.now() }]);
-      }
+    } catch (e) {
+      console.error('Delete project error', e);
+    } finally {
+      setIsDeleting(false);
+      setProjectToDelete(null);
     }
   };
 
@@ -551,9 +538,16 @@ function RapidCutEditor() {
         activeProjectId={activeProjectId}
         onSelectProject={loadProject}
         onCreateProject={createNewProject}
-        onDeleteProject={deleteProject}
+        onDeleteProject={(id) => setProjectToDelete(projects.find(p => p.id === id) || null)}
         onExportProject={exportProject}
         onImportProject={importProject}
+      />
+      <DeleteConfirmModal 
+        isOpen={!!projectToDelete} 
+        onClose={() => setProjectToDelete(null)} 
+        onConfirm={handleConfirmDelete} 
+        projectName={projectToDelete?.name || ''} 
+        isProcessing={isDeleting}
       />
       
       <Header 
