@@ -82,18 +82,18 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
 
-  // 獲取媒體時長工具
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const getMediaDuration = (url: string, isAudio: boolean): Promise<number> => {
     return new Promise((resolve) => {
       const el = document.createElement(isAudio ? 'audio' : 'video');
       el.src = url;
       el.onloadedmetadata = () => resolve(el.duration);
-      el.onerror = () => resolve(5); // 預設 5 秒回退
-      setTimeout(() => resolve(5), 3000); // 逾時處理
+      el.onerror = () => resolve(5);
+      setTimeout(() => resolve(5), 3000);
     });
   };
 
-  // 素材還原邏輯
   const restoreMediaUrls = async (lib: MediaAsset[]) => {
     setIsRestoringMedia(true);
     const updatedLib = [...lib];
@@ -101,27 +101,17 @@ function RapidCutEditor() {
 
     for (let i = 0; i < updatedLib.length; i++) {
       const asset = updatedLib[i];
-      const handle = await assetDB.getHandle(asset.id);
-      if (handle) {
-        try {
-          // @ts-ignore
-          let state = await handle.queryPermission({ mode: 'read' });
-          if (state !== 'granted') {
-             // @ts-ignore
-             state = await handle.requestPermission({ mode: 'read' });
-          }
-
-          if (state === 'granted') {
-            const file = await handle.getFile();
-            const url = URL.createObjectURL(file);
-            updatedLib[i] = { ...asset, url, isOffline: false, handle };
-            urlMap.set(asset.id, url);
-          } else {
-            updatedLib[i] = { ...asset, isOffline: true, handle };
-          }
-        } catch (e) {
+      try {
+        const blob = await assetDB.getAsset(asset.id);
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          updatedLib[i] = { ...asset, url, isOffline: false };
+          urlMap.set(asset.id, url);
+        } else {
           updatedLib[i] = { ...asset, isOffline: true };
         }
+      } catch (e) {
+        updatedLib[i] = { ...asset, isOffline: true };
       }
     }
 
@@ -135,7 +125,6 @@ function RapidCutEditor() {
     setIsRestoringMedia(false);
   };
 
-  // 載入專案流程
   const loadProject = async (id: string) => {
     const data = pm.getProjectData(id);
     if (!data) return;
@@ -149,11 +138,9 @@ function RapidCutEditor() {
     setSelectedItemId(null);
     setShowProjectModal(false);
 
-    // 切換後自動嘗試還原（僅檢查已有權限的）
     await restoreMediaUrls(initialLib);
   };
 
-  // 自動存檔監聽
   useEffect(() => {
     if (isInitialLoad.current || !pm.activeProjectId || isRestoringMedia) return;
     const timer = setTimeout(() => {
@@ -169,7 +156,6 @@ function RapidCutEditor() {
     return () => clearTimeout(timer);
   }, [pm.activeProjectId, projectName, items, projectSettings, library, isRestoringMedia]);
 
-  // 初始化
   useEffect(() => {
     const initApp = async () => {
       await assetDB.init();
@@ -198,12 +184,42 @@ function RapidCutEditor() {
   const handleConfirmDelete = async () => {
     if (!projectToDelete) return;
     setIsDeleting(true);
+    // 直接呼叫 pm.deleteProject，內部會處理資產清除
     await pm.deleteProject(projectToDelete.id);
     if (pm.activeProjectId === projectToDelete.id) {
       createNewProject();
     }
     setIsDeleting(false);
     setProjectToDelete(null);
+  };
+
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsRestoringMedia(true);
+    const newAssets: MediaAsset[] = [];
+    
+    for (const f of Array.from(files)) {
+      const assetId = Math.random().toString(36).substr(2, 9);
+      await assetDB.saveAsset(assetId, f);
+      const url = URL.createObjectURL(f);
+      const isAudio = f.type.startsWith('audio/');
+      const duration = await getMediaDuration(url, isAudio);
+
+      newAssets.push({ 
+        id: assetId, 
+        name: f.name, 
+        url, 
+        duration, 
+        type: isAudio ? 'audio' : 'video', 
+        isOffline: false 
+      });
+    }
+    
+    setLibrary(prev => [...prev, ...newAssets]);
+    setIsRestoringMedia(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const internalTimeRef = useRef(0);
@@ -395,54 +411,9 @@ function RapidCutEditor() {
     return markers;
   }, [totalTimelineDuration, pxPerSec]);
 
-  const handleLinkedImport = async () => {
-    try {
-      // @ts-ignore
-      if (!window.showOpenFilePicker) {
-        alert("Your browser doesn't support the File System Access API. Please use a modern desktop browser like Chrome or Edge.");
-        return;
-      }
-
-      // @ts-ignore
-      const handles = await window.showOpenFilePicker({ 
-        multiple: true, 
-        types: [{ 
-          description: 'Video and Audio Files',
-          accept: { 
-            'video/*': ['.mp4', '.mov', '.webm'], 
-            'audio/*': ['.mp3', '.wav'] 
-          } 
-        }] 
-      });
-
-      const newAssets: MediaAsset[] = [];
-      for (const h of handles) {
-        const f = await h.getFile();
-        const assetId = Math.random().toString(36).substr(2, 9);
-        await assetDB.saveHandle(assetId, h);
-        const url = URL.createObjectURL(f);
-        const isAudio = f.type.startsWith('audio/');
-        const duration = await getMediaDuration(url, isAudio);
-
-        const asset: MediaAsset = { 
-          id: assetId, 
-          name: f.name, 
-          url, 
-          duration, 
-          type: isAudio ? 'audio' : 'video', 
-          handle: h,
-          isOffline: false 
-        };
-        newAssets.push(asset);
-      }
-      setLibrary(prev => [...prev, ...newAssets]);
-    } catch (e) {
-      console.warn('Import cancelled or failed:', e);
-    }
-  };
-
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
+      <input type="file" ref={fileInputRef} multiple accept="video/*,audio/*" onChange={handleFileImport} className="hidden" />
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
       <RenderModal isOpen={showRenderModal} onClose={() => setShowRenderModal(false)} items={items} projectSettings={projectSettings} projectDuration={projectDuration} />
       <ProjectManagerModal 
@@ -453,8 +424,8 @@ function RapidCutEditor() {
         onSelectProject={loadProject}
         onCreateProject={createNewProject}
         onDeleteProject={(id) => setProjectToDelete(pm.projects.find(p => p.id === id) || null)}
-        onExportProject={() => {}} 
-        onImportProject={() => {}} 
+        onExportProject={(id) => pm.exportProject(id)} 
+        onImportProject={(file) => pm.importProject(file).then(id => id && loadProject(id))} 
       />
       <DeleteConfirmModal 
         isOpen={!!projectToDelete} 
@@ -475,10 +446,19 @@ function RapidCutEditor() {
         projectDuration={projectDuration} 
       />
 
+      {isRestoringMedia && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#1a1a1e] p-6 rounded-lg border border-white/10 shadow-2xl flex flex-col items-center gap-4">
+            <div className="w-8 h-8 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Syncing Workspace...</span>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
         <MediaBin 
           library={library} 
-          onImport={handleLinkedImport} 
+          onImport={() => fileInputRef.current?.click()} 
           onRelink={() => restoreMediaUrls(library)}
           onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 })} 
           onDragStart={setDraggingAsset} 
@@ -493,7 +473,10 @@ function RapidCutEditor() {
 
       <Timeline 
         items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: 'bg-zinc-700', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} 
-        onDropExternalFiles={() => { alert('Please use the "Linked Import" button to select files. Direct OS drop does not provide persistent disk handles.'); }}
+        onDropExternalFiles={(files) => {
+           const fakeEvent = { target: { files } } as any;
+           handleFileImport(fakeEvent);
+        }}
         v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)}
       />
     </div>

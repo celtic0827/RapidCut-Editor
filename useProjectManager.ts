@@ -13,7 +13,6 @@ export function useProjectManager() {
   const [projects, setProjects] = useState<ProjectMetadata[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>('');
 
-  // 讀取專案列表
   const refreshProjectList = useCallback(() => {
     const listJson = localStorage.getItem(STORAGE_KEYS.PROJECT_LIST);
     if (listJson) {
@@ -21,16 +20,13 @@ export function useProjectManager() {
     }
   }, []);
 
-  // 儲存單一專案詳細數據
   const saveProject = useCallback((project: Project) => {
     localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + project.id, JSON.stringify({
       ...project,
-      // 不儲存 URL，因為它們是暫時性的 Blob
       items: project.items.map(i => ({ ...i, url: '' })),
       library: project.library.map(a => ({ ...a, url: '' }))
     }));
 
-    // 更新列表中的最後修改時間
     setProjects(prev => {
       const exists = prev.find(p => p.id === project.id);
       let newList;
@@ -44,22 +40,25 @@ export function useProjectManager() {
     });
   }, []);
 
-  // 載入專案詳細數據
   const getProjectData = useCallback((id: string): Project | null => {
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (!dataJson) return null;
     return JSON.parse(dataJson);
   }, []);
 
-  // 刪除專案
   const deleteProject = useCallback(async (id: string) => {
     const data = getProjectData(id);
     if (data) {
-      // 清除 IndexedDB 中的 Handles
-      await Promise.all(data.library.map(asset => assetDB.deleteHandle(asset.id).catch(() => {})));
+      // 遍歷專案庫，徹底清除 IndexedDB 中的媒體 Blob
+      await Promise.all(data.library.map(asset => 
+        assetDB.deleteAsset(asset.id).catch(err => console.error('Failed to delete asset', asset.id, err))
+      ));
     }
+    
+    // 移除 LocalStorage 的專案配置
     localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     
+    // 更新專案列表
     setProjects(prev => {
       const newList = prev.filter(p => p.id !== id);
       localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
@@ -67,11 +66,43 @@ export function useProjectManager() {
     });
   }, [getProjectData]);
 
-  // 設定當前活躍專案 ID
   const markActive = useCallback((id: string) => {
     setActiveProjectId(id);
     localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
   }, []);
+
+  // 實裝專案導出
+  const exportProject = useCallback((id: string) => {
+    const data = getProjectData(id);
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${data.name}.rapidcut`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [getProjectData]);
+
+  // 實裝專案導入
+  const importProject = useCallback(async (file: File): Promise<string | null> => {
+    try {
+      const text = await file.text();
+      const project: Project = JSON.parse(text);
+      
+      // 重新生成 ID 以防衝突
+      const newId = Math.random().toString(36).substr(2, 9);
+      project.id = newId;
+      project.name = project.name + " (Imported)";
+      
+      saveProject(project);
+      refreshProjectList();
+      return newId;
+    } catch (e) {
+      console.error('Import failed', e);
+      return null;
+    }
+  }, [saveProject, refreshProjectList]);
 
   useEffect(() => {
     refreshProjectList();
@@ -86,6 +117,8 @@ export function useProjectManager() {
     getProjectData,
     deleteProject,
     markActive,
-    refreshProjectList
+    refreshProjectList,
+    exportProject,
+    importProject
   };
 }

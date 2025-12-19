@@ -41,8 +41,7 @@ export interface MediaAsset {
   url: string;
   duration: number;
   type: TrackType;
-  handle?: FileSystemFileHandle; // 關鍵：磁碟檔案指標
-  isOffline?: boolean; // 關鍵：是否需要重新驗證
+  isOffline?: boolean; 
 }
 
 export interface Project {
