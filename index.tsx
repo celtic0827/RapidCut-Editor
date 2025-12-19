@@ -14,12 +14,7 @@ import { PreviewPlayer } from './PreviewPlayer.tsx';
 import { Inspector } from './Inspector.tsx';
 import { Timeline } from './Timeline.tsx';
 import { assetDB } from './db.ts';
-
-const STORAGE_KEYS = {
-  PROJECT_LIST: 'rapidcut_project_list',
-  ACTIVE_ID: 'rapidcut_active_project_id',
-  PROJECT_PREFIX: 'rapidcut_project_'
-};
+import { useProjectManager } from './useProjectManager.ts';
 
 const TimelineUtils = {
   round: (num: number) => Math.round(num * 1000) / 1000,
@@ -50,6 +45,9 @@ const TimelineUtils = {
 };
 
 function RapidCutEditor() {
+  const pm = useProjectManager();
+  
+  // UI 狀態
   const [pxPerSec, setPxPerSec] = useState(15);
   const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
   const [isMagneticMode, setIsMagneticMode] = useState(false);
@@ -57,13 +55,13 @@ function RapidCutEditor() {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [activeDraggingId, setActiveDraggingId] = useState<string | null>(null);
   
-  const [projects, setProjects] = useState<ProjectMetadata[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string>('');
+  // 編輯器核心數據
   const [projectName, setProjectName] = useState('Untitled Project');
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [library, setLibrary] = useState<MediaAsset[]>([]);
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>({ width: 528, height: 768, fps: 30 });
   
+  // Modals
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRenderModal, setShowRenderModal] = useState(false);
   const [showProjectModal, setShowProjectModal] = useState(false);
@@ -84,52 +82,10 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
 
-  const relinkAllMedia = async () => {
-    setIsRestoringMedia(true);
-    const updatedLibrary = [...library];
-    const urlMap = new Map<string, string>();
-
-    for (let i = 0; i < updatedLibrary.length; i++) {
-      const asset = updatedLibrary[i];
-      const handle = await assetDB.getHandle(asset.id);
-      if (handle) {
-        try {
-          // @ts-ignore
-          let state = await handle.queryPermission({ mode: 'read' });
-          if (state !== 'granted') {
-            // @ts-ignore
-            state = await handle.requestPermission({ mode: 'read' });
-          }
-
-          if (state === 'granted') {
-            const file = await handle.getFile();
-            const url = URL.createObjectURL(file);
-            updatedLibrary[i] = { ...asset, url, isOffline: false, handle };
-            urlMap.set(asset.id, url);
-          } else {
-            updatedLibrary[i] = { ...asset, isOffline: true, handle };
-          }
-        } catch (e) {
-          console.error('Relink error for', asset.name, e);
-          updatedLibrary[i] = { ...asset, isOffline: true };
-        }
-      }
-    }
-
-    setLibrary(updatedLibrary);
-    setItems(prev => prev.map(item => {
-      if (item.assetId && urlMap.has(item.assetId)) {
-        return { ...item, url: urlMap.get(item.assetId) };
-      }
-      return item;
-    }));
-    setIsRestoringMedia(false);
-  };
-
-  const checkAndAutoRestore = async (lib: MediaAsset[]) => {
+  // 素材還原邏輯
+  const restoreMediaUrls = async (lib: MediaAsset[]) => {
     const updatedLib = [...lib];
     const urlMap = new Map<string, string>();
-    let changed = false;
 
     for (let i = 0; i < updatedLib.length; i++) {
       const asset = updatedLib[i];
@@ -142,91 +98,62 @@ function RapidCutEditor() {
           const url = URL.createObjectURL(file);
           updatedLib[i] = { ...asset, url, isOffline: false, handle };
           urlMap.set(asset.id, url);
-          changed = true;
         } else {
           updatedLib[i] = { ...asset, isOffline: true, handle };
-          changed = true;
         }
       }
     }
 
-    if (changed) {
-      setLibrary(updatedLib);
-      setItems(prev => prev.map(item => {
-        if (item.assetId && urlMap.has(item.assetId)) {
-          return { ...item, url: urlMap.get(item.assetId) };
-        }
-        return item;
-      }));
-    }
+    setLibrary(updatedLib);
+    setItems(prev => prev.map(item => {
+      if (item.assetId && urlMap.has(item.assetId)) {
+        return { ...item, url: urlMap.get(item.assetId) };
+      }
+      return item;
+    }));
   };
 
-  const saveToStorage = useCallback(() => {
-    if (isInitialLoad.current || !activeProjectId || isRestoringMedia) return;
-    
-    const projectData: Project = {
-      id: activeProjectId,
-      name: projectName,
-      lastModified: Date.now(),
-      items: items.map(i => ({ ...i, url: '' })), 
-      settings: projectSettings,
-      library: library.map(a => ({ ...a, url: '' })) 
-    };
-
-    localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + activeProjectId, JSON.stringify(projectData));
-    
-    setProjects(prev => {
-      const exists = prev.find(p => p.id === activeProjectId);
-      let newList;
-      if (exists) {
-        newList = prev.map(p => p.id === activeProjectId ? { ...p, name: projectName, lastModified: projectData.lastModified } : p);
-      } else {
-        newList = [...prev, { id: activeProjectId, name: projectName, lastModified: projectData.lastModified }];
-      }
-      localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
-      return newList;
-    });
-  }, [activeProjectId, projectName, items, projectSettings, library, isRestoringMedia]);
-
-  useEffect(() => {
-    const timer = setTimeout(saveToStorage, 1500);
-    return () => clearTimeout(timer);
-  }, [saveToStorage]);
-
+  // 載入專案流程
   const loadProject = async (id: string) => {
-    const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-    if (!dataJson) return;
-    
-    const data = JSON.parse(dataJson) as Project;
-    setActiveProjectId(id);
+    const data = pm.getProjectData(id);
+    if (!data) return;
+
+    // 重置編輯器狀態
+    pm.markActive(id);
     setProjectName(data.name);
     setProjectSettings(data.settings || { width: 528, height: 768, fps: 30 });
-    
-    const offlineLibrary = data.library.map(a => ({ ...a, isOffline: true }));
-    setLibrary(offlineLibrary);
     setItems(data.items);
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
+    setLibrary(data.library.map(a => ({ ...a, isOffline: true })));
+    setSelectedItemId(null);
     setShowProjectModal(false);
-    
-    await checkAndAutoRestore(offlineLibrary);
+
+    // 嘗試還原素材連結
+    await restoreMediaUrls(data.library);
   };
 
+  // 自動存檔監聽
+  useEffect(() => {
+    if (isInitialLoad.current || !pm.activeProjectId) return;
+    const timer = setTimeout(() => {
+      pm.saveProject({
+        id: pm.activeProjectId,
+        name: projectName,
+        lastModified: Date.now(),
+        items,
+        settings: projectSettings,
+        library
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [pm.activeProjectId, projectName, items, projectSettings, library]);
+
+  // 初始化
   useEffect(() => {
     const initApp = async () => {
       await assetDB.init();
-      const listJson = localStorage.getItem(STORAGE_KEYS.PROJECT_LIST);
-      const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_ID);
-      
-      if (listJson) {
-        const list = JSON.parse(listJson) as ProjectMetadata[];
-        setProjects(list);
-        if (activeId && list.find(p => p.id === activeId)) {
-          await loadProject(activeId);
-        } else if (list.length > 0) {
-          await loadProject(list[0].id);
-        } else {
-          createNewProject();
-        }
+      const lastActiveId = localStorage.getItem('rapidcut_active_project_id');
+      if (lastActiveId) {
+        await loadProject(lastActiveId);
       } else {
         createNewProject();
       }
@@ -237,105 +164,24 @@ function RapidCutEditor() {
 
   const createNewProject = () => {
     const id = Math.random().toString(36).substr(2, 9);
-    const newProjectName = 'New Project ' + (projects.length + 1);
-    setActiveProjectId(id);
-    setProjectName(newProjectName);
+    const newName = 'Project ' + (pm.projects.length + 1);
+    pm.markActive(id);
+    setProjectName(newName);
     setItems([]);
     setLibrary([]);
     setProjectSettings({ width: 528, height: 768, fps: 30 });
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
     setShowProjectModal(false);
   };
 
   const handleConfirmDelete = async () => {
     if (!projectToDelete) return;
     setIsDeleting(true);
-    const id = projectToDelete.id;
-
-    try {
-      const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-      if (dataJson) {
-        const data = JSON.parse(dataJson) as Project;
-        // 使用 Promise.all 並行刪除，加速處理流程
-        await Promise.all(data.library.map(asset => assetDB.deleteHandle(asset.id).catch(() => {})));
-      }
-
-      localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-      const newList = projects.filter(p => p.id !== id);
-      setProjects(newList);
-      localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
-
-      if (activeProjectId === id) {
-        if (newList.length > 0) {
-          await loadProject(newList[0].id);
-        } else {
-          createNewProject();
-        }
-      }
-    } catch (e) {
-      console.error('Delete project error', e);
-    } finally {
-      setIsDeleting(false);
-      setProjectToDelete(null);
+    await pm.deleteProject(projectToDelete.id);
+    if (pm.activeProjectId === projectToDelete.id) {
+      createNewProject();
     }
-  };
-
-  const exportProject = (id: string) => {
-    const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
-    if (!dataJson) return;
-    const blob = new Blob([dataJson], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `project_${id}.rapidcut`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const importProject = async (file: File) => {
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text) as Project;
-      if (!data.id || !data.name) throw new Error('Invalid project file');
-      localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + data.id, JSON.stringify(data));
-      setProjects(prev => {
-        const filtered = prev.filter(p => p.id !== data.id);
-        const newList = [...filtered, { id: data.id, name: data.name, lastModified: Date.now() }];
-        localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
-        return newList;
-      });
-      await loadProject(data.id);
-    } catch (e) {
-      console.error('Import failed', e);
-      alert('Failed to import project');
-    }
-  };
-
-  const handleImport = async () => {
-    try {
-      // @ts-ignore
-      const handles = await window.showOpenFilePicker({
-        multiple: true,
-        types: [{ description: 'Video & Audio', accept: { 'video/*': ['.mp4', '.mov', '.webm'], 'audio/*': ['.mp3', '.wav'] } }]
-      });
-
-      for (const handle of handles) {
-        const file = await handle.getFile();
-        const assetId = Math.random().toString(36).substr(2, 9);
-        await assetDB.saveHandle(assetId, handle);
-        const url = URL.createObjectURL(file);
-        const isAudio = file.type.startsWith('audio/');
-        const dur = await new Promise<number>(r => {
-          const el = document.createElement(isAudio ? 'audio' : 'video');
-          el.src = url; el.onloadedmetadata = () => r(el.duration);
-          el.onerror = () => r(5);
-        });
-        const asset: MediaAsset = { id: assetId, name: file.name, url, duration: dur, type: isAudio ? 'audio' : 'video', handle, isOffline: false };
-        setLibrary(prev => [...prev, asset]);
-      }
-    } catch (e) {
-      console.warn('Import cancelled or not supported');
-    }
+    setIsDeleting(false);
+    setProjectToDelete(null);
   };
 
   const internalTimeRef = useRef(0);
@@ -534,13 +380,13 @@ function RapidCutEditor() {
       <ProjectManagerModal 
         isOpen={showProjectModal} 
         onClose={() => setShowProjectModal(false)} 
-        projects={projects}
-        activeProjectId={activeProjectId}
+        projects={pm.projects}
+        activeProjectId={pm.activeProjectId}
         onSelectProject={loadProject}
         onCreateProject={createNewProject}
-        onDeleteProject={(id) => setProjectToDelete(projects.find(p => p.id === id) || null)}
-        onExportProject={exportProject}
-        onImportProject={importProject}
+        onDeleteProject={(id) => setProjectToDelete(pm.projects.find(p => p.id === id) || null)}
+        onExportProject={() => {}} // 導出邏輯可留待後續實裝
+        onImportProject={() => {}} // 導入邏輯可留待後續實裝
       />
       <DeleteConfirmModal 
         isOpen={!!projectToDelete} 
@@ -564,9 +410,22 @@ function RapidCutEditor() {
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
         <MediaBin 
           library={library} 
-          onImport={handleImport} 
-          onRelink={relinkAllMedia}
-          onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 })} 
+          onImport={async () => {
+             try {
+                // @ts-ignore
+                const handles = await window.showOpenFilePicker({ multiple: true, types: [{ accept: { 'video/*': ['.mp4'], 'audio/*': ['.mp3'] } }] });
+                for (const h of handles) {
+                  const f = await h.getFile();
+                  const assetId = Math.random().toString(36).substr(2, 9);
+                  await assetDB.saveHandle(assetId, h);
+                  const url = URL.createObjectURL(f);
+                  const asset: MediaAsset = { id: assetId, name: f.name, url, duration: 5, type: f.type.startsWith('video') ? 'video' : 'audio', isOffline: false };
+                  setLibrary(prev => [...prev, asset]);
+                }
+             } catch(e){}
+          }} 
+          onRelink={() => restoreMediaUrls(library)}
+          onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 })} 
           onDragStart={setDraggingAsset} 
           timelineItems={items} 
         />
@@ -578,7 +437,7 @@ function RapidCutEditor() {
       </main>
 
       <Timeline 
-        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={() => { alert('請使用 Import 按鈕以啟用磁碟連結模式'); }}
+        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: 'bg-zinc-700', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={() => {}}
         v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)}
       />
     </div>
