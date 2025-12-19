@@ -88,18 +88,14 @@ function RapidCutEditor() {
     const updatedLibrary = [...library];
     const urlMap = new Map<string, string>();
 
-    // 注意：requestPermission 必須由按鈕點擊觸發
     for (let i = 0; i < updatedLibrary.length; i++) {
       const asset = updatedLibrary[i];
       const handle = await assetDB.getHandle(asset.id);
       if (handle) {
         try {
-          // 先檢查是否已經有權限（瀏覽器可能記住了）
           // @ts-ignore
           let state = await handle.queryPermission({ mode: 'read' });
-          
           if (state !== 'granted') {
-            // 如果瀏覽器沒記住，則彈窗要求權限
             // @ts-ignore
             state = await handle.requestPermission({ mode: 'read' });
           }
@@ -130,7 +126,6 @@ function RapidCutEditor() {
   };
 
   const checkAndAutoRestore = async (lib: MediaAsset[]) => {
-    // 靜默檢查：如果瀏覽器記住了權限，就自動還原，不驚動使用者
     const updatedLib = [...lib];
     const urlMap = new Map<string, string>();
     let changed = false;
@@ -206,14 +201,12 @@ function RapidCutEditor() {
     setProjectName(data.name);
     setProjectSettings(data.settings || { width: 528, height: 768, fps: 30 });
     
-    // 初始化時先標記為離線
     const offlineLibrary = data.library.map(a => ({ ...a, isOffline: true }));
     setLibrary(offlineLibrary);
     setItems(data.items);
     localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
     setShowProjectModal(false);
     
-    // 立即嘗試靜默恢復
     await checkAndAutoRestore(offlineLibrary);
   };
 
@@ -254,20 +247,49 @@ function RapidCutEditor() {
   };
 
   const deleteProject = async (id: string) => {
+    const targetProjectName = projects.find(p => p.id === id)?.name || 'this project';
+    if (!window.confirm(`Are you sure you want to delete "${targetProjectName}"? This will also remove links to its media assets.`)) {
+      return;
+    }
+
+    // 1. 從 IndexedDB 刪除所有檔案句柄
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (dataJson) {
       const data = JSON.parse(dataJson) as Project;
       for (const asset of data.library) {
-        await assetDB.deleteHandle(asset.id);
+        try {
+          await assetDB.deleteHandle(asset.id);
+        } catch (e) {
+          console.error('Failed to delete asset handle', asset.id, e);
+        }
       }
     }
+
+    // 2. 移除 LocalStorage 內容
     localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
+
+    // 3. 更新專案列表
     const newList = projects.filter(p => p.id !== id);
     setProjects(newList);
     localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
+
+    // 4. 如果刪除的是目前開啟的專案，則跳轉
     if (activeProjectId === id) {
-      if (newList.length > 0) loadProject(newList[0].id);
-      else createNewProject();
+      if (newList.length > 0) {
+        await loadProject(newList[0].id);
+      } else {
+        // 如果沒有其他專案了，創建一個全新的
+        const newId = Math.random().toString(36).substr(2, 9);
+        setActiveProjectId(newId);
+        setProjectName('New Project 1');
+        setItems([]);
+        setLibrary([]);
+        setProjectSettings({ width: 528, height: 768, fps: 30 });
+        localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, newId);
+        // 注意：這裡不呼叫 saveToStorage，因為它是 useEffect 驅動的，但我們會確保清單正確
+        localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify([{ id: newId, name: 'New Project 1', lastModified: Date.now() }]));
+        setProjects([{ id: newId, name: 'New Project 1', lastModified: Date.now() }]);
+      }
     }
   };
 
