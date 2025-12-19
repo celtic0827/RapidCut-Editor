@@ -1,137 +1,93 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { Plus, UploadCloud, Library, FileVideo } from 'lucide-react';
-// Import MediaAsset from types.ts to ensure consistent schema including 'id'
-import { TrackType, TimelineItem, MediaAsset } from './types.ts';
+import { Plus, UploadCloud, Library, FileVideo, AlertCircle, CheckCircle } from 'lucide-react';
+import { MediaAsset, TimelineItem } from './types.ts';
 
 interface MediaBinProps {
   library: MediaAsset[];
-  onImport: (files: FileList) => void;
+  onImport: () => void;
+  onRelink: () => void;
   onAddFromLibrary: (asset: MediaAsset) => void;
   onDragStart: (asset: MediaAsset) => void;
   timelineItems: TimelineItem[];
 }
 
-// Fixed: Explicitly define the props interface to handle React special props like 'key' when using as a component
-interface MediaThumbnailProps {
-  asset: MediaAsset;
-  isUsed: boolean;
-  onClick: () => void;
-  onDragStart: (e: React.DragEvent) => void;
-}
-
-// Fixed: Use React.FC to properly support 'key' and other standard React props in the JSX call
-const MediaThumbnail: React.FC<MediaThumbnailProps> = ({ asset, isUsed, onClick, onDragStart }) => {
+const MediaThumbnail: React.FC<{ asset: MediaAsset; isUsed: boolean; onClick: () => void; onDragStart: (e: React.DragEvent) => void }> = ({ asset, isUsed, onClick, onDragStart }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      // 預覽圖抓時間點 10% 位移
-      videoRef.current.currentTime = asset.duration * 0.1;
-    }
-  };
 
   return (
     <div 
-      onClick={onClick} 
-      draggable
+      onClick={asset.isOffline ? undefined : onClick} 
+      draggable={!asset.isOffline}
       onDragStart={onDragStart}
-      className={`group relative aspect-video bg-black rounded overflow-hidden cursor-pointer border transition-all shadow-md
-        ${isUsed ? 'border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'border-zinc-800 hover:border-indigo-500'}
+      className={`group relative aspect-video bg-black rounded overflow-hidden transition-all border shadow-md
+        ${asset.isOffline ? 'border-amber-600/50 grayscale cursor-not-allowed opacity-60' : isUsed ? 'border-red-500' : 'border-zinc-800 hover:border-indigo-500 cursor-pointer'}
       `}
     >
-      <video 
-        ref={videoRef}
-        src={asset.url} 
-        onLoadedMetadata={handleLoadedMetadata}
-        className="w-full h-full object-cover opacity-60 group-hover:opacity-100" 
-      />
+      {!asset.isOffline && (
+        <video 
+          ref={videoRef}
+          src={asset.url} 
+          onLoadedMetadata={() => videoRef.current && (videoRef.current.currentTime = asset.duration * 0.1)}
+          className="w-full h-full object-cover opacity-60 group-hover:opacity-100" 
+        />
+      )}
       
-      {/* 標示已置入時間軸的紅框提示 (如果是 Used) */}
-      {isUsed && (
+      {asset.isOffline && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-amber-900/20 text-amber-500 gap-1">
+          <AlertCircle size={16} />
+          <span className="text-[7px] font-black uppercase">Offline</span>
+        </div>
+      )}
+
+      {isUsed && !asset.isOffline && (
         <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full shadow-[0_0_5px_rgba(239,68,68,1)] z-20" />
       )}
 
-      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40">
-        <Plus size={16} />
-      </div>
+      {!asset.isOffline && (
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/40">
+          <Plus size={16} />
+        </div>
+      )}
+
       <div className="absolute bottom-1 left-1 right-1 truncate text-[7px] bg-black/80 px-1 py-0.5 rounded font-black uppercase flex items-center gap-1">
-        <FileVideo size={8} className={isUsed ? 'text-red-400' : 'text-indigo-400'} />
-        <span className={`truncate ${isUsed ? 'text-red-200' : ''}`}>{asset.name}</span>
+        <FileVideo size={8} className={asset.isOffline ? 'text-amber-500' : isUsed ? 'text-red-400' : 'text-indigo-400'} />
+        <span className="truncate">{asset.name}</span>
       </div>
     </div>
   );
 };
 
-export const MediaBin = ({ library, onImport, onAddFromLibrary, onDragStart, timelineItems }: MediaBinProps) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isOver, setIsOver] = useState(false);
-
-  // 計算哪些 URL 已在時間軸中
-  const usedUrls = useMemo(() => new Set(timelineItems.map(item => item.url).filter((url): url is string => !!url)), [timelineItems]);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsOver(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onImport(e.dataTransfer.files);
-    }
-  };
+export const MediaBin = ({ library, onImport, onRelink, onAddFromLibrary, onDragStart, timelineItems }: MediaBinProps) => {
+  const usedUrls = useMemo(() => new Set(timelineItems.map(item => item.url).filter(Boolean)), [timelineItems]);
+  const hasOffline = useMemo(() => library.some(a => a.isOffline), [library]);
 
   return (
-    <aside 
-      className="w-48 border-r border-black bg-[#111114] flex flex-col shrink-0 overflow-hidden relative"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <div className="h-8 flex items-center px-3 border-b border-black bg-[#1a1a1e]">
+    <aside className="w-48 border-r border-black bg-[#111114] flex flex-col shrink-0 overflow-hidden">
+      <div className="h-8 flex items-center justify-between px-3 border-b border-black bg-[#1a1a1e]">
         <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
           <Library size={12} /> Media
         </span>
+        {hasOffline && (
+          <button onClick={onRelink} className="flex items-center gap-1 text-[8px] font-black text-amber-500 hover:text-amber-400 animate-pulse transition-colors uppercase">
+            <AlertCircle size={10} /> Relink
+          </button>
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-2 scrollbar-thin relative">
+      <div className="flex-1 overflow-y-auto p-2 space-y-2 scrollbar-thin">
         <button 
-          onClick={() => fileInputRef.current?.click()}
-          className={`w-full h-24 border border-dashed rounded flex flex-col items-center justify-center transition-all gap-2 group
-            ${isOver ? 'bg-indigo-500/10 border-indigo-500 text-indigo-400' : 'bg-black/20 border-zinc-800 text-zinc-600 hover:text-indigo-400 hover:border-indigo-500/50'}
-          `}
+          onClick={onImport}
+          className="w-full h-20 border border-dashed border-zinc-800 bg-black/20 text-zinc-600 rounded flex flex-col items-center justify-center gap-2 hover:border-indigo-500 hover:text-indigo-400 transition-all group"
         >
-          <UploadCloud size={20} className={isOver ? 'animate-bounce' : 'group-hover:scale-110 transition-transform'} />
-          <div className="flex flex-col items-center">
-            <span className="text-[9px] font-black uppercase">Import Clip</span>
-            <span className="text-[7px] opacity-50 uppercase font-bold tracking-tighter">Drop Files Here</span>
-          </div>
+          <UploadCloud size={18} className="group-hover:scale-110 transition-transform" />
+          <span className="text-[9px] font-black uppercase">Linked Import</span>
         </button>
         
-        <input 
-          type="file" 
-          ref={fileInputRef} 
-          className="hidden" 
-          accept="video/*" 
-          multiple 
-          onChange={(e) => e.target.files && onImport(e.target.files)} 
-        />
-        
         <div className="space-y-2">
-          {library.map((asset, i) => (
+          {library.map((asset) => (
             <MediaThumbnail 
-              key={i} 
+              key={asset.id} 
               asset={asset} 
               isUsed={usedUrls.has(asset.url)}
               onClick={() => onAddFromLibrary(asset)}
@@ -142,23 +98,7 @@ export const MediaBin = ({ library, onImport, onAddFromLibrary, onDragStart, tim
             />
           ))}
         </div>
-
-        {library.length === 0 && !isOver && (
-          <div className="text-center py-10 opacity-10 uppercase text-[7px] font-black flex flex-col items-center gap-2">
-            <FileVideo size={24} />
-            Empty Bin
-          </div>
-        )}
       </div>
-
-      {isOver && (
-        <div className="absolute inset-0 z-50 pointer-events-none bg-indigo-600/10 backdrop-blur-[1px] border-2 border-indigo-500/50 m-1 rounded flex items-center justify-center animate-pulse">
-          <div className="flex flex-col items-center gap-2 bg-black/80 px-4 py-3 rounded-lg border border-indigo-500/30">
-            <UploadCloud size={24} className="text-indigo-400" />
-            <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Drop to Import</span>
-          </div>
-        </div>
-      )}
     </aside>
   );
 };

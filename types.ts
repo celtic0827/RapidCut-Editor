@@ -18,7 +18,7 @@ export interface ClipFX {
 
 export interface TimelineItem {
   id: string;
-  assetId?: string; // 對應 IndexedDB 的 ID
+  assetId?: string;
   type: TrackType;
   startTime: number;
   duration: number;
@@ -36,11 +36,13 @@ export interface TimelineItem {
 }
 
 export interface MediaAsset {
-  id: string; // 唯一 ID 用於 IndexedDB
+  id: string;
   name: string;
-  url: string; // Session URL
+  url: string;
   duration: number;
   type: TrackType;
+  handle?: FileSystemFileHandle; // 關鍵：磁碟檔案指標
+  isOffline?: boolean; // 關鍵：是否需要重新驗證
 }
 
 export interface Project {

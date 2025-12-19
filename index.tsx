@@ -81,18 +81,57 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
 
-  // --- Persistence Logic ---
+  // --- Linked Media Logic ---
+
+  const relinkAllMedia = async () => {
+    setIsRestoringMedia(true);
+    const updatedLibrary = [...library];
+    const urlMap = new Map<string, string>();
+
+    for (let i = 0; i < updatedLibrary.length; i++) {
+      const asset = updatedLibrary[i];
+      const handle = await assetDB.getHandle(asset.id);
+      if (handle) {
+        try {
+          // 請求讀取權限 (彈出視窗只需點一次)
+          // Fix: Added @ts-ignore because requestPermission might not be in standard TypeScript lib
+          // @ts-ignore
+          const permission = await handle.requestPermission({ mode: 'read' });
+          if (permission === 'granted') {
+            const file = await handle.getFile();
+            const url = URL.createObjectURL(file);
+            updatedLibrary[i] = { ...asset, url, isOffline: false, handle };
+            urlMap.set(asset.id, url);
+          } else {
+            updatedLibrary[i] = { ...asset, isOffline: true, handle };
+          }
+        } catch (e) {
+          updatedLibrary[i] = { ...asset, isOffline: true, handle };
+        }
+      }
+    }
+
+    setLibrary(updatedLibrary);
+    setItems(prev => prev.map(item => {
+      if (item.assetId && urlMap.has(item.assetId)) {
+        return { ...item, url: urlMap.get(item.assetId) };
+      }
+      return item;
+    }));
+    setIsRestoringMedia(false);
+  };
 
   const saveToStorage = useCallback(() => {
     if (isInitialLoad.current || !activeProjectId || isRestoringMedia) return;
     
+    // 儲存時不存 Session URL，只存 Metadata
     const projectData: Project = {
       id: activeProjectId,
       name: projectName,
       lastModified: Date.now(),
-      items,
+      items: items.map(i => ({ ...i, url: '' })), // 網址不具持久性，清空
       settings: projectSettings,
-      library
+      library: library.map(a => ({ ...a, url: '' })) 
     };
 
     localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + activeProjectId, JSON.stringify(projectData));
@@ -115,34 +154,6 @@ function RapidCutEditor() {
     return () => clearTimeout(timer);
   }, [saveToStorage]);
 
-  const restoreMediaUrls = async (lib: MediaAsset[], timelineItems: TimelineItem[]) => {
-    setIsRestoringMedia(true);
-    const urlMap = new Map<string, string>();
-    
-    // 1. 恢復 Library URLs
-    const newLibrary = await Promise.all(lib.map(async (asset) => {
-      const blob = await assetDB.getAsset(asset.id);
-      if (blob) {
-        const url = URL.createObjectURL(blob);
-        urlMap.set(asset.id, url);
-        return { ...asset, url };
-      }
-      return asset;
-    }));
-
-    // 2. 更新 Timeline Items
-    const newItems = timelineItems.map(item => {
-      if (item.assetId && urlMap.has(item.assetId)) {
-        return { ...item, url: urlMap.get(item.assetId) };
-      }
-      return item;
-    });
-
-    setLibrary(newLibrary);
-    setItems(newItems);
-    setIsRestoringMedia(false);
-  };
-
   const loadProject = async (id: string) => {
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (!dataJson) return;
@@ -151,11 +162,33 @@ function RapidCutEditor() {
     setActiveProjectId(id);
     setProjectName(data.name);
     setProjectSettings(data.settings || { width: 528, height: 768, fps: 30 });
+    setLibrary(data.library.map(a => ({ ...a, isOffline: true }))); // 預設全部離線，等待 Relink
+    setItems(data.items);
     localStorage.setItem(STORAGE_KEYS.ACTIVE_ID, id);
     setShowProjectModal(false);
+    
+    // 自動嘗試非破壞性檢查 (不彈窗)
+    checkMediaHealth(data.library);
+  };
 
-    // 關鍵：重連媒體
-    await restoreMediaUrls(data.library || [], data.items || []);
+  const checkMediaHealth = async (lib: MediaAsset[]) => {
+    const updatedLib = [...lib];
+    let allHealthy = true;
+    for (let i = 0; i < updatedLib.length; i++) {
+      const handle = await assetDB.getHandle(updatedLib[i].id);
+      if (handle) {
+        // Fix: Added @ts-ignore because queryPermission might not be in standard TypeScript lib
+        // @ts-ignore
+        const state = await handle.queryPermission({ mode: 'read' });
+        if (state !== 'granted') allHealthy = false;
+        updatedLib[i].isOffline = state !== 'granted';
+      } else {
+        allHealthy = false;
+        updatedLib[i].isOffline = true;
+      }
+    }
+    setLibrary(updatedLib);
+    // 如果不健康，則在介面上提示使用者進行 Relink
   };
 
   useEffect(() => {
@@ -198,9 +231,8 @@ function RapidCutEditor() {
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (dataJson) {
       const data = JSON.parse(dataJson) as Project;
-      // 刪除該專案的所有媒體實體
       for (const asset of data.library) {
-        await assetDB.deleteAsset(asset.id);
+        await assetDB.deleteHandle(asset.id);
       }
     }
     localStorage.removeItem(STORAGE_KEYS.PROJECT_PREFIX + id);
@@ -213,33 +245,71 @@ function RapidCutEditor() {
     }
   };
 
+  // Fix: Implemented missing exportProject function
   const exportProject = (id: string) => {
     const dataJson = localStorage.getItem(STORAGE_KEYS.PROJECT_PREFIX + id);
     if (!dataJson) return;
     const blob = new Blob([dataJson], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    const meta = projects.find(p => p.id === id);
-    link.download = `${meta?.name || 'Project'}.rapidcut`;
-    link.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `project_${id}.rapidcut`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
+  // Fix: Implemented missing importProject function
   const importProject = async (file: File) => {
     try {
       const text = await file.text();
       const data = JSON.parse(text) as Project;
-      const newId = Math.random().toString(36).substr(2, 9);
-      data.id = newId;
-      localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + newId, JSON.stringify(data));
+      if (!data.id || !data.name) throw new Error('Invalid project file');
+      
+      localStorage.setItem(STORAGE_KEYS.PROJECT_PREFIX + data.id, JSON.stringify(data));
+      
       setProjects(prev => {
-        const newList = [...prev, { id: newId, name: data.name, lastModified: Date.now() }];
+        const filtered = prev.filter(p => p.id !== data.id);
+        const newList = [...filtered, { id: data.id, name: data.name, lastModified: Date.now() }];
         localStorage.setItem(STORAGE_KEYS.PROJECT_LIST, JSON.stringify(newList));
         return newList;
       });
-      loadProject(newId);
+      
+      await loadProject(data.id);
     } catch (e) {
-      alert('Invalid project file.');
+      console.error('Import failed', e);
+      alert('Failed to import project');
+    }
+  };
+
+  const handleImport = async () => {
+    try {
+      // @ts-ignore
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [{ description: 'Video & Audio', accept: { 'video/*': ['.mp4', '.mov', '.webm'], 'audio/*': ['.mp3', '.wav'] } }]
+      });
+
+      const imported = [];
+      for (const handle of handles) {
+        const file = await handle.getFile();
+        const assetId = Math.random().toString(36).substr(2, 9);
+        
+        // 儲存 Handle 而非 Blob (不佔空間)
+        await assetDB.saveHandle(assetId, handle);
+        
+        const url = URL.createObjectURL(file);
+        const isAudio = file.type.startsWith('audio/');
+        const dur = await new Promise<number>(r => {
+          const el = document.createElement(isAudio ? 'audio' : 'video');
+          el.src = url; el.onloadedmetadata = () => r(el.duration);
+          el.onerror = () => r(5);
+        });
+        const asset: MediaAsset = { id: assetId, name: file.name, url, duration: dur, type: isAudio ? 'audio' : 'video', handle, isOffline: false };
+        setLibrary(prev => [...prev, asset]);
+        imported.push(asset);
+      }
+    } catch (e) {
+      console.warn('Import cancelled or not supported');
     }
   };
 
@@ -264,7 +334,7 @@ function RapidCutEditor() {
     if (!v) return;
 
     const clip = TimelineUtils.getClipAtTime(items, t);
-    if (clip) {
+    if (clip && clip.url) {
       const target = (t - clip.startTime) + (clip.trimStart || 0);
       if (v.src !== clip.url) {
         v.src = clip.url || '';
@@ -285,7 +355,7 @@ function RapidCutEditor() {
 
     if (a) {
       const audioClip = items.find(i => i.type === 'audio' && t >= i.startTime && t <= i.startTime + i.duration + 0.001);
-      if (audioClip) {
+      if (audioClip && audioClip.url) {
         const aTarget = (t - audioClip.startTime) + (audioClip.trimStart || 0);
         if (a.src !== audioClip.url) {
           a.src = audioClip.url || '';
@@ -326,29 +396,6 @@ function RapidCutEditor() {
     return () => cancelAnimationFrame(frame);
   }, [isPlaying, isLooping, items, syncUI, syncMedia, trimPreviewTime]);
 
-  const handleImport = async (files: FileList) => {
-    const imported = [];
-    for (const file of Array.from(files)) {
-      if (!file.type.startsWith('video/') && !file.type.startsWith('audio/')) continue;
-      
-      const assetId = Math.random().toString(36).substr(2, 9);
-      // 永久儲存至 IndexedDB
-      await assetDB.saveAsset(assetId, file);
-      
-      const url = URL.createObjectURL(file);
-      const isAudio = file.type.startsWith('audio/');
-      const dur = await new Promise<number>(r => {
-        const el = document.createElement(isAudio ? 'audio' : 'video');
-        el.src = url; el.onloadedmetadata = () => r(el.duration);
-        el.onerror = () => r(5);
-      });
-      const asset: MediaAsset = { id: assetId, name: file.name, url, duration: dur, type: isAudio ? 'audio' : 'video' };
-      setLibrary(prev => [...prev, asset]);
-      imported.push(asset);
-    }
-    return imported;
-  };
-
   const addItem = (item: TimelineItem) => setItems(prev => [...prev, item]);
   const updateItem = (id: string, updates: Partial<TimelineItem>) => setItems(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i));
   const deleteItem = (id: string) => setItems(prev => prev.filter(i => i.id !== id));
@@ -359,14 +406,6 @@ function RapidCutEditor() {
       const splitRel = time - target.startTime;
       const newItem: TimelineItem = { ...target, id: Math.random().toString(), startTime: time, duration: target.duration - splitRel, trimStart: (target.trimStart || 0) + splitRel };
       return [...prev.map(i => i.id === id ? { ...i, duration: splitRel } : i), newItem];
-    });
-  };
-  const autoArrange = () => {
-    setItems(prev => {
-      let cursor = 0;
-      const videos = prev.filter(v => v.type === 'video').sort((a,b) => a.startTime - b.startTime);
-      const others = prev.filter(v => v.type !== 'video');
-      return [...videos.map(v => { const res = { ...v, startTime: cursor }; cursor += v.duration; return res; }), ...others];
     });
   };
 
@@ -440,16 +479,14 @@ function RapidCutEditor() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, [pxPerSec, isMagnetEnabled, isMagneticMode, seek]);
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.code === 'Space') { e.preventDefault(); setIsPlaying(p => !p); }
-      if (e.code === 'KeyS') { if (selectedItemId) splitItem(selectedItemId, internalTimeRef.current); }
-      if (e.code === 'Delete' || e.code === 'Backspace') { if (selectedItemId) { deleteItem(selectedItemId); setSelectedItemId(null); } }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [selectedItemId, setIsPlaying]);
+  const autoArrange = () => {
+    setItems(prev => {
+      let cursor = 0;
+      const videos = prev.filter(v => v.type === 'video').sort((a,b) => a.startTime - b.startTime);
+      const others = prev.filter(v => v.type !== 'video');
+      return [...videos.map(v => { const res = { ...v, startTime: cursor }; cursor += v.duration; return res; }), ...others];
+    });
+  };
 
   const projectDuration = useMemo(() => items.length === 0 ? 0 : Math.max(...items.map(i => i.startTime + i.duration)), [items]);
   const effectiveTime = trimPreviewTime !== null ? trimPreviewTime : internalTimeRef.current;
@@ -493,18 +530,10 @@ function RapidCutEditor() {
       />
 
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
-        {isRestoringMedia && (
-          <div className="absolute inset-0 z-[90] bg-black/60 backdrop-blur-sm flex items-center justify-center animate-fade-in">
-             <div className="flex flex-col items-center gap-3">
-               <div className="w-12 h-12 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
-               <span className="text-[10px] font-black text-indigo-100 uppercase tracking-widest">Restoring Media Assets...</span>
-             </div>
-          </div>
-        )}
-
         <MediaBin 
           library={library} 
           onImport={handleImport} 
+          onRelink={relinkAllMedia}
           onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 })} 
           onDragStart={setDraggingAsset} 
           timelineItems={items} 
@@ -517,7 +546,7 @@ function RapidCutEditor() {
       </main>
 
       <Timeline 
-        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={async (f, t) => { const assets = await handleImport(f); let cursor = t; assets.forEach(a => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: cursor, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); cursor += a.duration; }); }}
+        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={() => { alert('請使用 Import 按鈕以啟用磁碟連結模式'); }}
         v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)}
       />
     </div>
