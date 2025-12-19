@@ -17,26 +17,42 @@ import { PreviewPlayer } from './PreviewPlayer.tsx';
 import { Inspector } from './Inspector.tsx';
 import { Timeline } from './Timeline.tsx';
 
+/**
+ * [DOMAIN LOGIC: SNAPPING]
+ * 增加精確度處理，避免浮點數造成的抖動
+ */
 const TimelineUtils = {
+  round: (num: number) => Math.round(num * 1000) / 1000,
+  
   getSnapPoints(items: TimelineItem[], excludeId: string | null, playheadTime: number) {
-    const points = new Set([0, playheadTime]);
+    const points = new Set([0, this.round(playheadTime)]);
     items.forEach(i => {
       if (i.id !== excludeId) {
-        points.add(i.startTime);
-        points.add(i.startTime + i.duration);
+        points.add(this.round(i.startTime));
+        points.add(this.round(i.startTime + i.duration));
       }
     });
     return Array.from(points);
   },
-  applySnap(time: number, snapPoints: number[], threshold: number): { time: number, diff: number } {
+  
+  applySnap(time: number, snapPoints: number[], threshold: number): { time: number, snapped: boolean } {
     let closest = time;
     let minDiff = Infinity;
-    snapPoints.forEach(p => {
+    
+    for (const p of snapPoints) {
       const diff = Math.abs(time - p);
-      if (diff < minDiff) { minDiff = diff; closest = p; }
-    });
-    return { time: closest, diff: minDiff };
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = p;
+      }
+    }
+    
+    if (minDiff < threshold) {
+      return { time: this.round(closest), snapped: true };
+    }
+    return { time: this.round(time), snapped: false };
   },
+
   getClipAtTime(items: TimelineItem[], time: number): TimelineItem | undefined {
     return items.find(i => i.type === 'video' && time >= i.startTime && time <= i.startTime + i.duration + 0.001);
   }
@@ -75,7 +91,7 @@ function usePlayback(
   playheadRef: React.RefObject<HTMLDivElement>, 
   timeDisplayRef: React.RefObject<HTMLSpanElement>,
   trimPreviewTime: number | null,
-  v1Muted: boolean // 新增：軌道靜音狀態
+  v1Muted: boolean
 ) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLooping, setIsLooping] = useState(false);
@@ -124,7 +140,6 @@ function usePlayback(
         }
       }
       v.style.opacity = '1';
-      // 影像音量控制：全軌道靜音 OR 片段靜音
       v.muted = v1Muted || (clip.muted ?? false);
       v.volume = clip.volume ?? 1.0;
     } else {
@@ -192,7 +207,7 @@ function RapidCutEditor() {
   const [pxPerSec, setPxPerSec] = useState(15);
   const [isMagnetEnabled, setIsMagnetEnabled] = useState(true);
   const [isMagneticMode, setIsMagneticMode] = useState(false);
-  const [v1Muted, setV1Muted] = useState(false); // 新增：影像軌道全域靜音
+  const [v1Muted, setV1Muted] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [activeDraggingId, setActiveDraggingId] = useState<string | null>(null);
   const [projectSettings, setProjectSettings] = useState<ProjectSettings>({ width: 528, height: 768, fps: 30 });
@@ -243,47 +258,79 @@ function RapidCutEditor() {
       const rect = timelineRef.current.getBoundingClientRect();
       const scrollX = timelineRef.current.scrollLeft;
       if (isScrubbingRef.current) { const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); return; }
+      
       const info = dragInfoRef.current;
       if (!info) return;
-      const mouseTime = (e.clientX - rect.left + scrollX) / pxPerSec;
+      
+      const rawMouseTime = (e.clientX - rect.left + scrollX) / pxPerSec;
       const threshold = 12 / pxPerSec;
+
       setItems(prev => {
         const snapPoints = isMagnetEnabled ? TimelineUtils.getSnapPoints(prev, info.id, internalTime.current) : [];
         return prev.map(item => {
           if (item.id !== info.id) return item;
+          
           if (info.type === 'move') {
-            let newStart = mouseTime - info.clickOffsetTime;
+            let newStart = rawMouseTime - info.clickOffsetTime;
             if (isMagnetEnabled) {
               const snapPointsExceptSelf = snapPoints.filter(p => Math.abs(p - item.startTime) > 0.001);
-              const snapStart = TimelineUtils.applySnap(newStart, snapPointsExceptSelf, threshold);
-              const snapEnd = TimelineUtils.applySnap(newStart + item.duration, snapPointsExceptSelf, threshold);
-              if (snapStart.diff < snapEnd.diff) { if (snapStart.diff < threshold) newStart = snapStart.time; }
-              else { if (snapEnd.diff < threshold) newStart = snapEnd.time - item.duration; }
+              const startRes = TimelineUtils.applySnap(newStart, snapPointsExceptSelf, threshold);
+              const endRes = TimelineUtils.applySnap(newStart + item.duration, snapPointsExceptSelf, threshold);
+              
+              if (startRes.snapped) {
+                newStart = startRes.time;
+              } else if (endRes.snapped) {
+                newStart = endRes.time - item.duration;
+              }
             }
-            return { ...item, startTime: Math.max(0, newStart) };
+            return { ...item, startTime: Math.max(0, TimelineUtils.round(newStart)) };
           }
+          
           if (info.type === 'trim-end') {
-            let newEnd = mouseTime;
-            if (isMagnetEnabled) { const snapped = TimelineUtils.applySnap(newEnd, snapPoints, threshold); if (snapped.diff < threshold) newEnd = snapped.time; }
+            let newEnd = rawMouseTime;
+            if (isMagnetEnabled) {
+              const res = TimelineUtils.applySnap(newEnd, snapPoints, threshold);
+              if (res.snapped) newEnd = res.time;
+            }
             if (item.type === 'video') newEnd = Math.min(newEnd, item.startTime + ((item.originalDuration || 100) - (item.trimStart || 0)));
             const newDuration = Math.max(0.1, newEnd - item.startTime);
             setTrimPreviewTime(item.startTime + newDuration);
-            return { ...item, duration: newDuration };
+            return { ...item, duration: TimelineUtils.round(newDuration) };
           }
+          
           if (info.type === 'trim-start') {
             const fixedEnd = info.initialStart + info.initialDur;
-            let newStart = mouseTime;
-            if (isMagnetEnabled) { const snapped = TimelineUtils.applySnap(newStart, snapPoints, threshold); if (snapped.diff < threshold) newStart = snapped.time; }
+            let newStart = rawMouseTime;
+            if (isMagnetEnabled) {
+              const res = TimelineUtils.applySnap(newStart, snapPoints, threshold);
+              if (res.snapped) newStart = res.time;
+            }
             newStart = Math.min(newStart, fixedEnd - 0.1);
-            if (item.type === 'video') { const maxPossibleStart = fixedEnd - (item.originalDuration || 100); newStart = Math.max(newStart, maxPossibleStart); }
+            if (item.type === 'video') {
+              const maxPossibleStart = fixedEnd - (item.originalDuration || 100);
+              newStart = Math.max(newStart, maxPossibleStart);
+            }
             setTrimPreviewTime(newStart);
-            return { ...item, startTime: newStart, duration: fixedEnd - newStart, trimStart: (item.trimStart || 0) + (newStart - item.startTime) };
+            return { 
+              ...item, 
+              startTime: TimelineUtils.round(newStart), 
+              duration: TimelineUtils.round(fixedEnd - newStart), 
+              trimStart: TimelineUtils.round((item.trimStart || 0) + (newStart - item.startTime)) 
+            };
           }
           return item;
         });
       });
     };
-    const onUp = () => { if (dragInfoRef.current && isMagneticMode) autoArrange(); isScrubbingRef.current = false; dragInfoRef.current = null; setTrimPreviewTime(null); setActiveDraggingId(null); };
+    
+    const onUp = () => { 
+      if (dragInfoRef.current && isMagneticMode) autoArrange(); 
+      isScrubbingRef.current = false; 
+      dragInfoRef.current = null; 
+      setTrimPreviewTime(null); 
+      setActiveDraggingId(null); 
+    };
+    
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
@@ -329,7 +376,7 @@ function RapidCutEditor() {
       </main>
       <Timeline 
         items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTime.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: type === 'video' ? 'bg-zinc-700' : 'bg-indigo-600', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTime.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={async (f, t) => { const assets = await handleImport(f); let cursor = t; assets.forEach(a => { addItem({ id: Math.random().toString(), type: a.type, startTime: cursor, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: a.type === 'video' ? 'bg-zinc-700' : 'bg-emerald-600', muted: false, volume: 1.0 }); cursor += a.duration; }); }}
-        v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)} // 新增控制
+        v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)}
       />
     </div>
   );

@@ -126,15 +126,15 @@ export const TimelineClip = memo(({
 
         <div className="absolute inset-0 z-10 cursor-inherit pointer-events-auto" onMouseDown={(e) => { e.stopPropagation(); onSelect(item.id); onDragStart(e, item); }} />
 
-        {/* 優化：將左右 px-2 改為 px-5 以避開 w-4 的拖拉柄 */}
+        {/* 標籤容器：內縮 px-5 避開拖拉柄，移除檔名 span 顯示 */}
         <div className="absolute inset-0 z-20 flex items-center gap-1.5 px-5 truncate pointer-events-none text-white/90">
-          {item.type === 'text' && <Type size={11} className="shrink-0 text-indigo-400" />}
-          {item.type === 'audio' && <Music size={11} className="shrink-0 text-emerald-400" />}
-          <span className="truncate select-none uppercase tracking-tighter text-[9px] font-black drop-shadow-md">{item.name}</span>
+          {item.type === 'text' && <Type size={11} className="shrink-0 text-indigo-400 drop-shadow-md" />}
+          {item.type === 'audio' && <Music size={11} className="shrink-0 text-emerald-400 drop-shadow-md" />}
           
-          {/* 優化：移除 ml-auto，讓音量圖示緊跟名稱，確保留在中間安全區域 */}
+          {/* 已移除檔名文字顯示 */}
+          
           {item.type === 'video' && (
-            <div className="flex items-center opacity-80 shrink-0">
+            <div className="flex items-center opacity-90 shrink-0 drop-shadow-md">
               {item.muted ? <VolumeX size={10} className="text-red-400" /> : <Volume2 size={10} className="text-indigo-400" />}
             </div>
           )}
