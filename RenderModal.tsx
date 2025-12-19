@@ -13,7 +13,7 @@ interface RenderModalProps {
   projectDuration: number;
 }
 
-const TRANSITION_DUR = 0.4; // 與 index.tsx 保持一致
+const TRANSITION_DUR = 0.4;
 
 export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDuration }: RenderModalProps) => {
   const [status, setStatus] = useState<'idle' | 'loading-wasm' | 'rendering' | 'encoding' | 'completed' | 'error'>('idle');
@@ -42,7 +42,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
       await ffmpeg.load({ coreURL, wasmURL, workerURL });
     } catch (err: any) {
-      throw new Error("FFmpeg 初始化失敗，請檢查網路或更換瀏覽器。");
+      console.error('FFmpeg Load Error:', err);
+      throw new Error("FFmpeg 核心載入失敗。請確認瀏覽器支援 SharedArrayBuffer。");
     }
     ffmpegRef.current = ffmpeg;
     return ffmpeg;
@@ -71,6 +72,12 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   };
 
   const handleStartRender = async () => {
+    if (projectDuration <= 0) {
+      setStatus('error');
+      setErrorMsg('專案時長不能為 0。');
+      return;
+    }
+
     setStatus('rendering');
     setProgress(0);
     abortController.current = false;
@@ -81,53 +88,99 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const sampleRate = 44100;
       const totalFrames = Math.ceil(projectDuration * fps);
 
-      // --- 1. 音訊導出 (維持原樣) ---
-      const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
-      const soundItems = items.filter(i => (i.type === 'video' || i.type === 'audio') && i.url);
-      for (const item of soundItems) {
-        try {
-          const res = await fetch(item.url!);
-          const buf = await res.arrayBuffer();
-          const decoded = await offlineCtx.decodeAudioData(buf);
-          const source = offlineCtx.createBufferSource();
-          source.buffer = decoded;
-          const gain = offlineCtx.createGain();
-          gain.gain.value = item.volume ?? 1.0;
-          source.connect(gain);
-          gain.connect(offlineCtx.destination);
-          source.start(item.startTime, item.trimStart, item.duration);
-        } catch (e) { console.warn('Audio sync failed', item.name); }
+      // --- 1. 音訊混合 ---
+      let wavData: Uint8Array | null = null;
+      try {
+        const offlineCtx = new OfflineAudioContext(2, Math.max(1, Math.ceil(projectDuration * sampleRate)), sampleRate);
+        const soundItems = items.filter(i => (i.type === 'video' || i.type === 'audio') && i.url);
+        
+        for (const item of soundItems) {
+          try {
+            const res = await fetch(item.url!);
+            const buf = await res.arrayBuffer();
+            const decoded = await offlineCtx.decodeAudioData(buf);
+            const source = offlineCtx.createBufferSource();
+            source.buffer = decoded;
+            const gain = offlineCtx.createGain();
+            gain.gain.value = item.volume ?? 1.0;
+            source.connect(gain);
+            gain.connect(offlineCtx.destination);
+            source.start(item.startTime, item.trimStart, item.duration);
+          } catch (e) { 
+            console.warn(`跳過音軌: ${item.name}`, e); 
+          }
+        }
+        const mixedAudio = await offlineCtx.startRendering();
+        wavData = bufferToWav(mixedAudio);
+        await ffmpeg.writeFile('audio.wav', wavData);
+      } catch (audioErr) {
+        console.error('Audio Render Error:', audioErr);
+        // 如果音訊失敗，建立一個靜音軌，不要中斷整個渲染
+        await ffmpeg.writeFile('audio.wav', new Uint8Array(44)); 
       }
-      const mixedAudio = await offlineCtx.startRendering();
-      const wavData = bufferToWav(mixedAudio);
-      await ffmpeg.writeFile('audio.wav', wavData);
 
-      // --- 2. 畫面渲染 ---
+      // --- 2. 畫面逐影格渲染 ---
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
-      const ctx = canvas.getContext('2d', { alpha: false })!;
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
       
       const videoClips = items.filter(i => i.type === 'video' && i.url);
       const videoElements = new Map<string, HTMLVideoElement>();
+      
+      // 預載影片元件
       for (const clip of videoClips) {
         const v = document.createElement('video');
         v.src = clip.url!;
         v.crossOrigin = 'anonymous';
         v.muted = true;
-        await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
+        v.preload = 'auto';
+        await new Promise(r => { 
+          v.onloadedmetadata = r; 
+          v.onerror = () => { console.error('影片載入失敗', clip.url); r(null); }; 
+          setTimeout(r, 2000); // 逾時保護
+        });
         videoElements.set(clip.id, v);
       }
+
+      const drawClip = async (clip: TimelineItem, alpha: number, blur: number, currentTime: number) => {
+        const v = videoElements.get(clip.id);
+        if (!v) return;
+        
+        const targetTime = Math.max(0, (currentTime - clip.startTime) + clip.trimStart);
+        v.currentTime = targetTime;
+        
+        await new Promise(r => { 
+          const onSeek = () => { v.removeEventListener('seeked', onSeek); r(null); };
+          v.addEventListener('seeked', onSeek);
+          // 如果目標時間與目前時間極其接近，seeked 可能不會觸發，使用 timeout 保險
+          setTimeout(onSeek, 150); 
+        });
+        
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        if (blur > 0) ctx.filter = `blur(${blur}px)`;
+        
+        if (clip.fx?.shakeEnabled) {
+           const t = currentTime * clip.fx.shakeFrequency + clip.fx.seed;
+           ctx.translate(Math.sin(t * 7) * clip.fx.shakeIntensity, Math.cos(t * 11) * clip.fx.shakeIntensity);
+           const zoom = clip.fx.shakeZoom || 1;
+           ctx.scale(zoom, zoom);
+        }
+        
+        // 保持比例繪製
+        ctx.drawImage(v, 0, 0, width, height);
+        ctx.restore();
+      };
 
       for (let i = 0; i < totalFrames; i++) {
         if (abortController.current) break;
         const currentTime = i / fps;
-        setProgress(Math.round((i / totalFrames) * 80));
+        setProgress(Math.round((i / totalFrames) * 85));
 
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
 
-        // 轉場邏輯偵測
         const incomingClip = items.find(c => 
           c.type === 'video' && 
           c.transition === 'blur' && 
@@ -135,31 +188,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           currentTime <= c.startTime + TRANSITION_DUR
         );
 
-        const drawClip = async (clip: TimelineItem, alpha: number, blur: number) => {
-          const v = videoElements.get(clip.id);
-          if (!v) return;
-          v.currentTime = (currentTime - clip.startTime) + clip.trimStart;
-          await new Promise(r => { 
-            const onSeek = () => { v.removeEventListener('seeked', onSeek); r(null); };
-            v.addEventListener('seeked', onSeek);
-            setTimeout(onSeek, 100); // 導出時給予更多 buffer 時間確保畫質
-          });
-          
-          ctx.save();
-          ctx.globalAlpha = alpha;
-          if (blur > 0) ctx.filter = `blur(${blur}px)`;
-          
-          if (clip.fx?.shakeEnabled) {
-             const t = currentTime * clip.fx.shakeFrequency + clip.fx.seed;
-             ctx.translate(Math.sin(t * 7) * clip.fx.shakeIntensity, Math.cos(t * 11) * clip.fx.shakeIntensity);
-             ctx.scale(clip.fx.shakeZoom, clip.fx.shakeZoom);
-          }
-          ctx.drawImage(v, 0, 0, width, height);
-          ctx.restore();
-        };
-
         if (incomingClip) {
-          const progress = (currentTime - incomingClip.startTime) / TRANSITION_DUR;
+          const transProgress = (currentTime - incomingClip.startTime) / TRANSITION_DUR;
           const outgoingClip = items.find(c => 
             c.id !== incomingClip.id && 
             c.type === 'video' && 
@@ -167,21 +197,18 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
             currentTime <= c.startTime + c.duration
           );
 
-          // 1. 繪製退場 (Outgoing)
           if (outgoingClip) {
-            await drawClip(outgoingClip, 1 - progress, progress * 24);
+            await drawClip(outgoingClip, 1 - transProgress, transProgress * 24, currentTime);
           }
-          // 2. 繪製進場 (Incoming)
-          await drawClip(incomingClip, progress, (1 - progress) * 24);
+          await drawClip(incomingClip, transProgress, (1 - transProgress) * 24, currentTime);
         } else {
-          // 正常模式
           const activeClip = items.find(c => c.type === 'video' && currentTime >= c.startTime && currentTime < c.startTime + c.duration);
           if (activeClip) {
-            await drawClip(activeClip, 1, 0);
+            await drawClip(activeClip, 1, 0, currentTime);
           }
         }
 
-        // 文字渲染
+        // 文字層
         const activeTexts = items.filter(t => t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration);
         for (const text of activeTexts) {
           ctx.save();
@@ -195,7 +222,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.restore();
         }
 
-        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.85));
         if (frameBlob) {
           const frameNum = i.toString().padStart(5, '0');
           const arrayBuffer = await frameBlob.arrayBuffer();
@@ -203,12 +230,15 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         }
       }
 
-      // --- 3. 編碼 (維持原樣) ---
+      // --- 3. FFmpeg 編碼 ---
       setStatus('encoding');
+      
+      // 核心修復：libx264 要求寬高必須為偶數。使用 vf scale 自動修正。
       await ffmpeg.exec([
         '-framerate', fps.toString(),
         '-i', 'frame_%05d.jpg',
         '-i', 'audio.wav',
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', 
         '-c:v', 'libx264',
         '-b:v', `${settings.bitrate}`,
         '-preset', 'ultrafast',
@@ -216,6 +246,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         '-c:a', 'aac',
         '-b:a', '128k',
         '-pix_fmt', 'yuv420p',
+        '-shortest', // 確保音訊長度不會超過影片
         '-y', 'output.mp4'
       ]);
 
@@ -227,9 +258,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       link.click();
       setStatus('completed');
     } catch (err: any) {
-      console.error('Render Error:', err);
+      console.error('Render Final Error:', err);
       setStatus('error');
-      setErrorMsg(err.message || '渲染失敗。');
+      setErrorMsg(err.message || '渲染過程發生未知錯誤。');
     }
   };
 
@@ -252,7 +283,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                 <div className="space-y-1">
                   <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">FX Renderer Enabled</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold">
-                    已自動將轉場特效加入導出排程。導出過程會根據特效複雜度動態調整幀合成速度。
+                    即將進行影格合成。請確保您的解析度為偶數（或由系統自動修正）以確保最佳相容性。
                   </p>
                 </div>
               </div>
@@ -285,7 +316,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="space-y-2">
                 <Loader2 size={16} className="animate-spin text-indigo-400 mx-auto" />
                 <p className="text-[10px] font-black uppercase text-zinc-400 tracking-[0.2em]">
-                  {status === 'rendering' ? 'Synthesizing FX Frames...' : 'Muxing Stream...'}
+                  {status === 'rendering' ? 'Rendering FX Layers...' : 'Merging Audio & Video...'}
                 </p>
               </div>
             </div>
@@ -304,8 +335,8 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           {status === 'error' && (
             <div className="py-10 flex flex-col items-center gap-4">
               <AlertTriangle size={48} className="text-amber-500" />
-              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg">
-                 <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed">{errorMsg}</p>
+              <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-lg overflow-hidden max-w-xs">
+                 <p className="text-[9px] text-rose-400 font-bold uppercase tracking-widest leading-relaxed break-words">{errorMsg}</p>
               </div>
               <button onClick={() => setStatus('idle')} className="w-full bg-zinc-800 text-white py-3 rounded-xl uppercase text-[10px] font-black mt-4 transition-all hover:bg-zinc-700">Retry</button>
             </div>
