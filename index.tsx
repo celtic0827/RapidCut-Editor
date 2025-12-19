@@ -82,8 +82,20 @@ function RapidCutEditor() {
   const isScrubbingRef = useRef(false);
   const isInitialLoad = useRef(true);
 
+  // 獲取媒體時長工具
+  const getMediaDuration = (url: string, isAudio: boolean): Promise<number> => {
+    return new Promise((resolve) => {
+      const el = document.createElement(isAudio ? 'audio' : 'video');
+      el.src = url;
+      el.onloadedmetadata = () => resolve(el.duration);
+      el.onerror = () => resolve(5); // 預設 5 秒回退
+      setTimeout(() => resolve(5), 3000); // 逾時處理
+    });
+  };
+
   // 素材還原邏輯
   const restoreMediaUrls = async (lib: MediaAsset[]) => {
+    setIsRestoringMedia(true);
     const updatedLib = [...lib];
     const urlMap = new Map<string, string>();
 
@@ -91,15 +103,24 @@ function RapidCutEditor() {
       const asset = updatedLib[i];
       const handle = await assetDB.getHandle(asset.id);
       if (handle) {
-        // @ts-ignore
-        const state = await handle.queryPermission({ mode: 'read' });
-        if (state === 'granted') {
-          const file = await handle.getFile();
-          const url = URL.createObjectURL(file);
-          updatedLib[i] = { ...asset, url, isOffline: false, handle };
-          urlMap.set(asset.id, url);
-        } else {
-          updatedLib[i] = { ...asset, isOffline: true, handle };
+        try {
+          // @ts-ignore
+          let state = await handle.queryPermission({ mode: 'read' });
+          if (state !== 'granted') {
+             // @ts-ignore
+             state = await handle.requestPermission({ mode: 'read' });
+          }
+
+          if (state === 'granted') {
+            const file = await handle.getFile();
+            const url = URL.createObjectURL(file);
+            updatedLib[i] = { ...asset, url, isOffline: false, handle };
+            urlMap.set(asset.id, url);
+          } else {
+            updatedLib[i] = { ...asset, isOffline: true, handle };
+          }
+        } catch (e) {
+          updatedLib[i] = { ...asset, isOffline: true };
         }
       }
     }
@@ -111,6 +132,7 @@ function RapidCutEditor() {
       }
       return item;
     }));
+    setIsRestoringMedia(false);
   };
 
   // 載入專案流程
@@ -118,22 +140,22 @@ function RapidCutEditor() {
     const data = pm.getProjectData(id);
     if (!data) return;
 
-    // 重置編輯器狀態
     pm.markActive(id);
     setProjectName(data.name);
     setProjectSettings(data.settings || { width: 528, height: 768, fps: 30 });
     setItems(data.items);
-    setLibrary(data.library.map(a => ({ ...a, isOffline: true })));
+    const initialLib = data.library.map(a => ({ ...a, isOffline: true }));
+    setLibrary(initialLib);
     setSelectedItemId(null);
     setShowProjectModal(false);
 
-    // 嘗試還原素材連結
-    await restoreMediaUrls(data.library);
+    // 切換後自動嘗試還原（僅檢查已有權限的）
+    await restoreMediaUrls(initialLib);
   };
 
   // 自動存檔監聽
   useEffect(() => {
-    if (isInitialLoad.current || !pm.activeProjectId) return;
+    if (isInitialLoad.current || !pm.activeProjectId || isRestoringMedia) return;
     const timer = setTimeout(() => {
       pm.saveProject({
         id: pm.activeProjectId,
@@ -145,7 +167,7 @@ function RapidCutEditor() {
       });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [pm.activeProjectId, projectName, items, projectSettings, library]);
+  }, [pm.activeProjectId, projectName, items, projectSettings, library, isRestoringMedia]);
 
   // 初始化
   useEffect(() => {
@@ -373,6 +395,52 @@ function RapidCutEditor() {
     return markers;
   }, [totalTimelineDuration, pxPerSec]);
 
+  const handleLinkedImport = async () => {
+    try {
+      // @ts-ignore
+      if (!window.showOpenFilePicker) {
+        alert("Your browser doesn't support the File System Access API. Please use a modern desktop browser like Chrome or Edge.");
+        return;
+      }
+
+      // @ts-ignore
+      const handles = await window.showOpenFilePicker({ 
+        multiple: true, 
+        types: [{ 
+          description: 'Video and Audio Files',
+          accept: { 
+            'video/*': ['.mp4', '.mov', '.webm'], 
+            'audio/*': ['.mp3', '.wav'] 
+          } 
+        }] 
+      });
+
+      const newAssets: MediaAsset[] = [];
+      for (const h of handles) {
+        const f = await h.getFile();
+        const assetId = Math.random().toString(36).substr(2, 9);
+        await assetDB.saveHandle(assetId, h);
+        const url = URL.createObjectURL(f);
+        const isAudio = f.type.startsWith('audio/');
+        const duration = await getMediaDuration(url, isAudio);
+
+        const asset: MediaAsset = { 
+          id: assetId, 
+          name: f.name, 
+          url, 
+          duration, 
+          type: isAudio ? 'audio' : 'video', 
+          handle: h,
+          isOffline: false 
+        };
+        newAssets.push(asset);
+      }
+      setLibrary(prev => [...prev, ...newAssets]);
+    } catch (e) {
+      console.warn('Import cancelled or failed:', e);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-[#0d0d0f] text-zinc-400 font-sans overflow-hidden select-none text-[11px]">
       <ProjectSettingsModal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} settings={projectSettings} setSettings={setProjectSettings} />
@@ -385,8 +453,8 @@ function RapidCutEditor() {
         onSelectProject={loadProject}
         onCreateProject={createNewProject}
         onDeleteProject={(id) => setProjectToDelete(pm.projects.find(p => p.id === id) || null)}
-        onExportProject={() => {}} // 導出邏輯可留待後續實裝
-        onImportProject={() => {}} // 導入邏輯可留待後續實裝
+        onExportProject={() => {}} 
+        onImportProject={() => {}} 
       />
       <DeleteConfirmModal 
         isOpen={!!projectToDelete} 
@@ -410,20 +478,7 @@ function RapidCutEditor() {
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
         <MediaBin 
           library={library} 
-          onImport={async () => {
-             try {
-                // @ts-ignore
-                const handles = await window.showOpenFilePicker({ multiple: true, types: [{ accept: { 'video/*': ['.mp4'], 'audio/*': ['.mp3'] } }] });
-                for (const h of handles) {
-                  const f = await h.getFile();
-                  const assetId = Math.random().toString(36).substr(2, 9);
-                  await assetDB.saveHandle(assetId, h);
-                  const url = URL.createObjectURL(f);
-                  const asset: MediaAsset = { id: assetId, name: f.name, url, duration: 5, type: f.type.startsWith('video') ? 'video' : 'audio', isOffline: false };
-                  setLibrary(prev => [...prev, asset]);
-                }
-             } catch(e){}
-          }} 
+          onImport={handleLinkedImport} 
           onRelink={() => restoreMediaUrls(library)}
           onAddFromLibrary={(a) => addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: internalTimeRef.current, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 })} 
           onDragStart={setDraggingAsset} 
@@ -437,7 +492,8 @@ function RapidCutEditor() {
       </main>
 
       <Timeline 
-        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: 'bg-zinc-700', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} onDropExternalFiles={() => {}}
+        items={items} pxPerSec={pxPerSec} setPxPerSec={setPxPerSec} selectedItemId={selectedItemId} setSelectedItemId={setSelectedItemId} activeDraggingId={activeDraggingId} isMagnetEnabled={isMagnetEnabled} setIsMagnetEnabled={setIsMagnetEnabled} isMagneticMode={isMagneticMode} setIsMagneticMode={setIsMagneticMode} projectDuration={projectDuration} totalTimelineDuration={totalTimelineDuration} onAddItem={(type) => addItem({ id: Math.random().toString(), type, startTime: internalTimeRef.current, duration: 5, trimStart: 0, name: type.toUpperCase(), color: 'bg-zinc-700', muted: false, volume: 1.0 })} onSplit={() => selectedItemId && splitItem(selectedItemId, internalTimeRef.current)} onAutoArrange={autoArrange} isPlaying={isPlaying} setIsPlaying={setIsPlaying} onJumpToStart={() => seek(0)} onJumpToEnd={() => seek(projectDuration)} isLooping={isLooping} setIsLooping={setIsLooping} onMouseDown={(e) => { if (!timelineRef.current) return; const rect = timelineRef.current.getBoundingClientRect(); const scrollX = timelineRef.current.scrollLeft; const t = Math.max(0, (e.clientX - rect.left + scrollX) / pxPerSec); seek(t); isScrubbingRef.current = true; setIsPlaying(false); }} onStartDrag={(e, item, type) => { const rect = timelineRef.current?.getBoundingClientRect() || { left: 0 }; const scrollX = timelineRef.current?.scrollLeft || 0; const clickTime = (e.clientX - rect.left + scrollX) / pxPerSec; setActiveDraggingId(item.id); dragInfoRef.current = { id: item.id, type, initialStart: item.startTime, initialDur: item.duration, clickOffsetTime: clickTime - item.startTime }; }} renderRuler={renderRuler} timelineRef={timelineRef} playheadRef={playheadRef} draggingAsset={draggingAsset} dragOverTime={dragOverTime} onDragUpdate={setDragOverTime} onDropFromLibrary={(a, t) => { addItem({ id: Math.random().toString(), assetId: a.id, type: a.type, startTime: t, duration: a.duration, trimStart: 0, originalDuration: a.duration, name: a.name, url: a.url, color: 'bg-zinc-700', muted: false, volume: 1.0 }); setDraggingAsset(null); setDragOverTime(null); }} 
+        onDropExternalFiles={() => { alert('Please use the "Linked Import" button to select files. Direct OS drop does not provide persistent disk handles.'); }}
         v1Muted={v1Muted} onToggleV1Mute={() => setV1Muted(!v1Muted)}
       />
     </div>
