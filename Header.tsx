@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Clapperboard, Settings2, Download, Folder } from 'lucide-react';
+import { Clapperboard, Settings2, Download, FolderOpen } from 'lucide-react';
 
 interface HeaderProps {
   projectName: string;
@@ -33,13 +33,14 @@ export const Header = ({
       
       <div className="h-4 w-[1px] bg-white/5 mx-1" />
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 bg-black/40 rounded px-1.5 py-0.5 border border-white/5 focus-within:border-indigo-500/50 transition-colors">
         <button 
           onClick={onOpenProjectManager}
-          className="p-1 text-zinc-500 hover:text-indigo-400 transition-colors"
-          title="Project Manager"
+          className="flex items-center gap-1.5 pr-2 mr-1 border-r border-white/10 text-zinc-500 hover:text-indigo-400 transition-all group"
+          title="Open Project Manager"
         >
-          <Folder size={12} />
+          <FolderOpen size={11} className="group-hover:scale-110 transition-transform" />
+          <span className="text-[8px] font-black uppercase tracking-[0.1em] hidden sm:block opacity-60 group-hover:opacity-100">Library</span>
         </button>
         <input 
           type="text"
