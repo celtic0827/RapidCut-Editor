@@ -32,37 +32,41 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
   if (!isOpen) return null;
 
   const loadFFmpeg = async () => {
-    // 檢查 Cross-Origin Isolation，這是 FFmpeg.wasm 啟用多執行緒(SharedArrayBuffer)的必要條件
-    if (!window.crossOriginIsolated) {
-      throw new Error("環境未隔離 (COOP/COEP 標頭缺失)。請確認 Vercel 配置。");
-    }
-
     if (ffmpegRef.current && ffmpegRef.current.loaded) return ffmpegRef.current;
     
-    setStage('正在啟動渲染核心...');
+    setStage('正在啟動渲染核心 (ESM)...');
     setStatus('loading-wasm');
     const ffmpeg = new FFmpeg();
     
     ffmpeg.on('log', ({ message }) => {
       console.log('[FFmpeg Runtime]', message);
+      // Optional: set stage to last few lines of log for better UX
+      if (message.includes('frame=')) {
+        setStage(`編碼中: ${message.split('frame=')[1].split('fps=')[0].trim()} 影格`);
+      }
     });
 
-    // 使用 0.12.6 的 UMD 版本，這在多執行緒環境下最為穩定
-    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+    ffmpeg.on('progress', ({ progress }) => {
+      if (status === 'encoding') {
+        setProgress(Math.round(85 + progress * 15));
+      }
+    });
+
+    // 使用 ESM 版本，解決 UMD 下 Worker 路徑 404 的問題
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
     
     try {
-      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-      const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        // 在 ESM 模式下，worker 通常由 core 自動處理，或者明確指定
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+      });
       
-      await ffmpeg.load({ coreURL, wasmURL, workerURL });
-      
-      // 給予檔案系統一點初始化緩衝時間，防止立即 writeFile 觸發 FS error
-      await new Promise(r => setTimeout(r, 200));
-      console.log('FFmpeg Multi-threaded Core Initialized');
+      console.log('FFmpeg Core Loaded successfully');
     } catch (err: any) {
       console.error('FFmpeg Load Error:', err);
-      throw new Error("無法加載 WebAssembly 核心。請重新整理頁面或更換瀏覽器。");
+      throw new Error("無法載入 WebAssembly 核心。請確認瀏覽器支援 SharedArrayBuffer。");
     }
     
     ffmpegRef.current = ffmpeg;
@@ -133,11 +137,11 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         const mixedAudio = await offlineCtx.startRendering();
         const wavData = bufferToWav(mixedAudio);
         
-        setStage('正在寫入音訊檔...');
         await ffmpeg.writeFile('audio.wav', wavData);
       } catch (e) {
         console.warn('音訊渲染異常，將生成無聲影片', e);
-        await ffmpeg.writeFile('audio.wav', new Uint8Array(44)); 
+        // 生成一個極短的空白 WAV 以免 FFmpeg 報錯
+        await ffmpeg.writeFile('audio.wav', new Uint8Array(100)); 
       }
 
       // --- 2. 影格合成 ---
@@ -150,15 +154,17 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       const videoClips = items.filter(i => i.type === 'video' && i.url);
       const videoElements = new Map<string, HTMLVideoElement>();
       
+      // 預載影片元件
       for (const clip of videoClips) {
         const v = document.createElement('video');
         v.src = clip.url!;
         v.crossOrigin = 'anonymous';
         v.muted = true;
+        v.playsInline = true;
         await new Promise(r => { 
           v.onloadeddata = r; 
           v.onerror = r; 
-          setTimeout(r, 6000); 
+          setTimeout(r, 5000); 
         });
         videoElements.set(clip.id, v);
       }
@@ -168,22 +174,23 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         if (!v || v.readyState < 2) return;
         
         const targetTime = Math.max(0, (currentTime - clip.startTime) + clip.trimStart);
-        if (Math.abs(v.currentTime - targetTime) > 0.05) {
+        // 優化：只有在差距較大時才執行 seek，減少等待時間
+        if (Math.abs(v.currentTime - targetTime) > 0.04) {
           v.currentTime = targetTime;
           await new Promise(r => { 
             const onSeek = () => { v.removeEventListener('seeked', onSeek); r(null); };
             v.addEventListener('seeked', onSeek);
-            setTimeout(onSeek, 1000); // 尋軌緩衝時間
+            setTimeout(onSeek, 800); 
           });
         }
         
         ctx.save();
         ctx.globalAlpha = alpha;
-        if (blur > 0) ctx.filter = `blur(${blur}px)`;
+        if (blur > 0) ctx.filter = `blur(${Math.min(blur, 50)}px)`;
         
         if (clip.fx?.shakeEnabled) {
-           const t = currentTime * clip.fx.shakeFrequency + clip.fx.seed;
-           ctx.translate(Math.sin(t * 7) * clip.fx.shakeIntensity, Math.cos(t * 11) * clip.fx.shakeIntensity);
+           const t = currentTime * (clip.fx.shakeFrequency || 1) + (clip.fx.seed || 0);
+           ctx.translate(Math.sin(t * 7) * (clip.fx.shakeIntensity || 0), Math.cos(t * 11) * (clip.fx.shakeIntensity || 0));
            ctx.scale(clip.fx.shakeZoom || 1.05, clip.fx.shakeZoom || 1.05);
         }
         ctx.drawImage(v, 0, 0, width, height);
@@ -193,12 +200,14 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       for (let i = 0; i < totalFrames; i++) {
         if (abortController.current) break;
         const currentTime = i / fps;
-        setProgress(Math.round((i / totalFrames) * 85));
-        setStage(`合成中: ${Math.round((i / totalFrames) * 100)}%`);
+        const currentProgress = Math.round((i / totalFrames) * 85);
+        setProgress(currentProgress);
+        setStage(`正在合成影格: ${i}/${totalFrames} (${Math.round((i / totalFrames) * 100)}%)`);
 
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
 
+        // 處理轉場 (Blur)
         const incomingClip = items.find(c => 
           c.type === 'video' && 
           c.transition === 'blur' && 
@@ -221,7 +230,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           if (activeClip) await drawClip(activeClip, 1, 0, currentTime);
         }
 
-        // 文字處理
+        // 處理文字
         const activeTexts = items.filter(t => t.type === 'text' && currentTime >= t.startTime && currentTime < t.startTime + t.duration);
         for (const text of activeTexts) {
           ctx.save();
@@ -229,23 +238,21 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
           ctx.font = '900 64px "Inter", sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.shadowColor = 'rgba(0,0,0,0.5)';
-          ctx.shadowBlur = 10;
+          ctx.shadowColor = 'rgba(0,0,0,0.8)';
+          ctx.shadowBlur = 15;
           ctx.fillText(text.content?.toUpperCase() || "", width / 2, height / 2);
           ctx.restore();
         }
 
-        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+        const frameBlob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.8));
         if (frameBlob) {
-          const frameNum = i.toString().padStart(5, '0');
           const ab = await frameBlob.arrayBuffer();
-          // 使用 Uint8Array 寫入，這是 FFmpeg.wasm 要求的格式
-          await ffmpeg.writeFile(`f_${frameNum}.jpg`, new Uint8Array(ab));
+          await ffmpeg.writeFile(`f_${i.toString().padStart(5, '0')}.jpg`, new Uint8Array(ab));
         }
       }
 
       // --- 3. 最終編碼 ---
-      setStage('正在進行 H.264 影片編碼...');
+      setStage('影格合成完畢，開始 H.264 編碼...');
       setStatus('encoding');
       
       await ffmpeg.exec([
@@ -254,12 +261,13 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
         '-i', 'audio.wav',
         '-c:v', 'libx264',
         '-b:v', `${settings.bitrate}`,
-        '-preset', 'ultrafast',
+        '-preset', 'ultrafast', // 速度優先
         '-pix_fmt', 'yuv420p',
+        '-shortest', // 以較短的軌道為主（音訊或影片）
         '-y', 'output.mp4'
       ]);
 
-      setStage('正在導出成果...');
+      setStage('導出完成，正在準備下載...');
       const data = await ffmpeg.readFile('output.mp4');
       const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
       const link = document.createElement('a');
@@ -267,21 +275,23 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
       link.download = `${settings.filename}.mp4`;
       link.click();
       
-      // 清理快取
-      try {
-        const files = await ffmpeg.listDir('.');
-        for (const f of files) {
-           if (f.name.startsWith('f_') || f.name === 'audio.wav' || f.name === 'output.mp4') {
-             await ffmpeg.deleteFile(f.name);
-           }
-        }
-      } catch (e) {}
+      // 延遲清理檔案，確保導出完成
+      setTimeout(async () => {
+        try {
+          const files = await ffmpeg.listDir('.');
+          for (const f of files) {
+            if (f.name.startsWith('f_') || f.name === 'audio.wav' || f.name === 'output.mp4') {
+              await ffmpeg.deleteFile(f.name);
+            }
+          }
+        } catch (e) {}
+      }, 1000);
 
       setStatus('completed');
     } catch (err: any) {
       console.error('Render failure:', err);
       setStatus('error');
-      setErrorMsg(err.message || '發生檔案系統錯誤 (FS Error)。請嘗試降低解析度或減少影片長度。');
+      setErrorMsg(err.message || '渲染過程中發生未知錯誤。請確認資源連結有效且瀏覽器記憶體充足。');
     }
   };
 
@@ -305,7 +315,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                   <div className="space-y-1">
                     <p className="text-[10px] text-rose-400 font-black uppercase tracking-wider">Isolation Barrier</p>
                     <p className="text-[9px] text-rose-500/70 leading-relaxed uppercase font-bold">
-                      SharedArrayBuffer 尚未啟用。請確認 vercel.json 已更新並生效。
+                      SharedArrayBuffer 尚未啟用。請確認 vercel.json 的標頭設定已生效。
                     </p>
                   </div>
                 </div>
@@ -314,9 +324,9 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-start gap-3 text-left">
                 <ShieldCheck size={16} className="text-indigo-400 mt-0.5" />
                 <div className="space-y-1">
-                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">Stability Fix applied</p>
+                  <p className="text-[10px] text-zinc-100 font-black uppercase tracking-wider">ESM Core Ready</p>
                   <p className="text-[9px] text-zinc-500 leading-relaxed uppercase font-bold text-pretty">
-                    已切換至 UMD 核心以修正 404 與 FS 錯誤。
+                    已切換至 ESM 核心以修正 404 與多執行緒加載問題。
                   </p>
                 </div>
               </div>
@@ -352,10 +362,10 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
               <div className="relative w-32 h-32">
                 <svg className="w-full h-full -rotate-90">
                   <circle cx="64" cy="64" r="58" stroke="#27272a" strokeWidth="8" fill="none" />
-                  <circle cx="64" cy="64" r="58" stroke="#6366f1" strokeWidth="8" fill="none" strokeDasharray="364.4" strokeDashoffset={364.4 - (364.4 * (status === 'encoding' ? 95 : progress)) / 100} className="transition-all duration-300" />
+                  <circle cx="64" cy="64" r="58" stroke="#6366f1" strokeWidth="8" fill="none" strokeDasharray="364.4" strokeDashoffset={364.4 - (364.4 * progress) / 100} className="transition-all duration-300" />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-2xl font-black text-white">{status === 'encoding' ? '95%' : `${progress}%`}</span>
+                  <span className="text-2xl font-black text-white">{progress}%</span>
                 </div>
               </div>
               <div className="space-y-2">
@@ -371,6 +381,7 @@ export const RenderModal = ({ isOpen, onClose, items, projectSettings, projectDu
                 <CheckCircle2 size={40} className="text-emerald-500" />
               </div>
               <h4 className="text-white font-black text-sm uppercase tracking-widest">Render Finished</h4>
+              <p className="text-[9px] text-zinc-500 uppercase font-bold tracking-tight">影片已開始下載</p>
               <button onClick={onClose} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black text-xs py-3 rounded-lg uppercase mt-2">Close</button>
             </div>
           )}

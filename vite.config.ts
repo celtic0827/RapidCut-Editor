@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
-        // 核心修正：啟用安全標頭，否則 FFmpeg 會載入失敗
+        // 核心修正：啟用安全標頭，否則 FFmpeg.wasm (SharedArrayBuffer) 會載入失敗
         headers: {
           'Cross-Origin-Embedder-Policy': 'require-corp',
           'Cross-Origin-Opener-Policy': 'same-origin',
