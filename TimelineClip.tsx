@@ -1,3 +1,4 @@
+
 import React, { memo, useRef, useEffect, useMemo } from 'react';
 import { Type, Music } from 'lucide-react';
 import { TimelineItem } from './types.ts';
@@ -12,6 +13,7 @@ import {
 interface ClipProps {
   item: TimelineItem;
   isSelected: boolean;
+  isDragging?: boolean;
   pxPerSec: number;
   onSelect: (id: string) => void;
   onDragStart: (e: React.MouseEvent, item: TimelineItem) => void;
@@ -33,7 +35,7 @@ const VideoFrame: React.FC<{ url: string; time: number }> = ({ url, time }) => {
 };
 
 export const TimelineClip = memo(({ 
-  item, isSelected, pxPerSec, onSelect, onDragStart, onTrimStart 
+  item, isSelected, isDragging, pxPerSec, onSelect, onDragStart, onTrimStart 
 }: ClipProps) => {
   const clipWidth = item.duration * pxPerSec;
   let top = 2;
@@ -46,6 +48,11 @@ export const TimelineClip = memo(({
     top = LANE_HEIGHT_TEXT + LANE_HEIGHT_VIDEO + 2;
     height = CLIP_HEIGHT_AUDIO;
   }
+
+  const isAtSourceStart = (item.trimStart || 0) <= 0.001;
+  const isAtSourceEnd = item.originalDuration 
+    ? (item.trimStart || 0) + item.duration >= (item.originalDuration - 0.001) 
+    : false;
 
   const thumbnails = useMemo(() => {
     if (item.type !== 'video' || !item.url) return null;
@@ -60,9 +67,12 @@ export const TimelineClip = memo(({
     return frames;
   }, [item.id, item.type, item.url, item.duration, item.trimStart, clipWidth]);
 
+  const ghostWidth = (item.originalDuration || item.duration) * pxPerSec;
+  const ghostOffset = -(item.trimStart || 0) * pxPerSec;
+
   return (
     <div
-      className="absolute z-20"
+      className={`absolute transition-shadow ${isDragging ? 'z-50' : isSelected ? 'z-30' : 'z-20'}`}
       style={{
         left: item.startTime * pxPerSec,
         top: top,
@@ -70,14 +80,36 @@ export const TimelineClip = memo(({
         height: height,
       }}
     >
+      {item.type === 'video' && item.originalDuration && (
+        <div 
+          className="absolute pointer-events-none border border-white/5 bg-white/[0.03] rounded-sm opacity-40 z-0"
+          style={{
+            left: ghostOffset,
+            width: ghostWidth,
+            height: height,
+            top: 0,
+            borderStyle: 'dashed'
+          }}
+        />
+      )}
+
       <div
         className={`absolute inset-0 rounded-none overflow-hidden cursor-grab active:cursor-grabbing border will-change-transform z-10
-          ${isSelected 
-            ? 'border-green-400 z-30 ring-1 ring-green-400/20' 
-            : 'border-zinc-700 hover:border-blue-400'
+          ${isDragging ? 'border-violet-500 shadow-[0_0_20px_rgba(139,92,246,0.3)] brightness-110' : 
+            isSelected ? 'border-green-400 ring-1 ring-green-400/20' : 'border-zinc-700 hover:border-blue-400'
           }
           ${item.type === 'audio' ? 'bg-emerald-900/40' : item.type === 'video' ? 'bg-zinc-800' : item.color}`}
       >
+        {/* 拖曳時的強化視覺導引：參考附件圖片，壓入一小段明顯的線性漸層 */}
+        {isDragging && (
+          <>
+            {/* 左側邊界漸層 */}
+            <div className="absolute inset-y-0 left-0 w-12 bg-gradient-to-r from-violet-600/60 via-violet-600/20 to-transparent pointer-events-none z-40 border-l-2 border-violet-400" />
+            {/* 右側邊界漸層 */}
+            <div className="absolute inset-y-0 right-0 w-12 bg-gradient-to-l from-violet-600/60 via-violet-600/20 to-transparent pointer-events-none z-40 border-r-2 border-violet-400" />
+          </>
+        )}
+
         {item.type === 'video' && (
           <div className="absolute inset-0 flex flex-row overflow-hidden pointer-events-none select-none z-0">
             {thumbnails}
@@ -103,12 +135,28 @@ export const TimelineClip = memo(({
           <span className="truncate select-none uppercase tracking-tighter text-[9px] font-black drop-shadow-md">{item.name}</span>
         </div>
 
-        <div onMouseDown={(e) => { e.stopPropagation(); onTrimStart(e, item, 'trim-start'); }} className="absolute left-0 top-0 bottom-0 w-3 hover:bg-white/10 cursor-ew-resize transition-colors flex items-center justify-center group z-30">
-          <div className={`w-[2px] h-1/2 rounded-none ${isSelected ? 'bg-green-400' : 'bg-zinc-600 group-hover:bg-blue-300'}`} />
+        <div 
+          onMouseDown={(e) => { e.stopPropagation(); onTrimStart(e, item, 'trim-start'); }} 
+          className="absolute left-0 top-0 bottom-0 w-4 hover:bg-white/5 cursor-ew-resize transition-colors flex items-center justify-center group z-50"
+        >
+          <div className={`w-[2px] h-1/2 rounded-none transition-all duration-150
+            ${(isAtSourceStart) 
+              ? 'bg-zinc-600 group-hover:bg-red-500 group-hover:scale-x-150 group-hover:shadow-[0_0_10px_rgba(239,68,68,0.8)]' 
+              : isSelected ? 'bg-green-400' : 'bg-zinc-600 group-hover:bg-blue-300'}
+            ${isDragging && isAtSourceStart ? 'bg-red-500 scale-x-150 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : ''}
+          `} />
         </div>
 
-        <div onMouseDown={(e) => { e.stopPropagation(); onTrimStart(e, item, 'trim-end'); }} className="absolute right-0 top-0 bottom-0 w-3 hover:bg-white/10 cursor-ew-resize transition-colors flex items-center justify-center group z-30">
-          <div className={`w-[2px] h-1/2 rounded-none ${isSelected ? 'bg-green-400' : 'bg-zinc-600 group-hover:bg-blue-300'}`} />
+        <div 
+          onMouseDown={(e) => { e.stopPropagation(); onTrimStart(e, item, 'trim-end'); }} 
+          className="absolute right-0 top-0 bottom-0 w-4 hover:bg-white/5 cursor-ew-resize transition-colors flex items-center justify-center group z-50"
+        >
+          <div className={`w-[2px] h-1/2 rounded-none transition-all duration-150
+            ${(isAtSourceEnd) 
+              ? 'bg-zinc-600 group-hover:bg-red-500 group-hover:scale-x-150 group-hover:shadow-[0_0_10px_rgba(239,68,68,0.8)]' 
+              : isSelected ? 'bg-green-400' : 'bg-zinc-600 group-hover:bg-blue-300'}
+            ${isDragging && isAtSourceEnd ? 'bg-red-500 scale-x-150 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : ''}
+          `} />
         </div>
       </div>
     </div>
