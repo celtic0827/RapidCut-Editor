@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Trash2, Monitor, Waves, Zap, Hash, Scaling, Save, Wand2, RefreshCw } from 'lucide-react';
+import { Trash2, Monitor, Waves, Zap, Hash, Scaling, Save, Wand2, RefreshCw, Volume2, VolumeX } from 'lucide-react';
 import { TimelineItem, ClipFX } from './types';
 
 interface InspectorProps {
@@ -41,6 +41,32 @@ export const Inspector = ({ activeItem, onUpdateItem, onDeleteItem, onSavePreset
                   className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-indigo-500" 
                 />
               </div>
+
+              {(activeItem.type === 'video' || activeItem.type === 'audio') && (
+                <div className="pt-2 space-y-3">
+                   <div className="flex items-center justify-between">
+                    <label className="text-[8px] text-zinc-600 uppercase font-black">Audio Control</label>
+                    <button 
+                      onClick={() => onUpdateItem(activeItem.id, { muted: !activeItem.muted })}
+                      className={`p-1 rounded transition-colors ${activeItem.muted ? 'bg-red-500/10 text-red-500' : 'text-zinc-500 hover:text-indigo-400'}`}
+                    >
+                      {activeItem.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[7px] font-bold text-zinc-500 uppercase">
+                      <span>Volume</span>
+                      <span className="text-indigo-400">{Math.round((activeItem.volume ?? 1) * 100)}%</span>
+                    </div>
+                    <input 
+                      type="range" min="0" max="1.5" step="0.01" 
+                      value={activeItem.volume ?? 1} 
+                      onChange={e => onUpdateItem(activeItem.id, { volume: parseFloat(e.target.value) })} 
+                      className="w-full h-1 bg-zinc-800 accent-indigo-500" 
+                    />
+                  </div>
+                </div>
+              )}
 
               {activeItem.type === 'text' && (
                 <div>
@@ -104,7 +130,6 @@ export const Inspector = ({ activeItem, onUpdateItem, onDeleteItem, onSavePreset
                     </div>
                   </div>
 
-                  {/* Save Preset UI */}
                   <div className="pt-4 border-t border-zinc-900 space-y-2">
                     <label className="text-[8px] text-zinc-600 uppercase font-black block">Save as Style</label>
                     <div className="flex gap-2">

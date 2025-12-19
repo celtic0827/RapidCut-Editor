@@ -1,6 +1,6 @@
 
 import React, { memo, useRef, useEffect, useMemo } from 'react';
-import { Type, Music } from 'lucide-react';
+import { Type, Music, Volume2, VolumeX } from 'lucide-react';
 import { TimelineItem } from './types.ts';
 import { 
   LANE_HEIGHT_TEXT, 
@@ -100,12 +100,9 @@ export const TimelineClip = memo(({
           }
           ${item.type === 'audio' ? 'bg-emerald-900/40' : item.type === 'video' ? 'bg-zinc-800' : item.color}`}
       >
-        {/* 拖曳時的強化視覺導引：參考附件圖片，壓入一小段明顯的線性漸層 */}
         {isDragging && (
           <>
-            {/* 左側邊界漸層 */}
             <div className="absolute inset-y-0 left-0 w-12 bg-gradient-to-r from-violet-600/60 via-violet-600/20 to-transparent pointer-events-none z-40 border-l-2 border-violet-400" />
-            {/* 右側邊界漸層 */}
             <div className="absolute inset-y-0 right-0 w-12 bg-gradient-to-l from-violet-600/60 via-violet-600/20 to-transparent pointer-events-none z-40 border-r-2 border-violet-400" />
           </>
         )}
@@ -129,10 +126,18 @@ export const TimelineClip = memo(({
 
         <div className="absolute inset-0 z-10 cursor-inherit pointer-events-auto" onMouseDown={(e) => { e.stopPropagation(); onSelect(item.id); onDragStart(e, item); }} />
 
-        <div className="absolute inset-0 z-20 flex items-center gap-1.5 px-2 truncate pointer-events-none text-white/90">
+        {/* 優化：將左右 px-2 改為 px-5 以避開 w-4 的拖拉柄 */}
+        <div className="absolute inset-0 z-20 flex items-center gap-1.5 px-5 truncate pointer-events-none text-white/90">
           {item.type === 'text' && <Type size={11} className="shrink-0 text-indigo-400" />}
           {item.type === 'audio' && <Music size={11} className="shrink-0 text-emerald-400" />}
           <span className="truncate select-none uppercase tracking-tighter text-[9px] font-black drop-shadow-md">{item.name}</span>
+          
+          {/* 優化：移除 ml-auto，讓音量圖示緊跟名稱，確保留在中間安全區域 */}
+          {item.type === 'video' && (
+            <div className="flex items-center opacity-80 shrink-0">
+              {item.muted ? <VolumeX size={10} className="text-red-400" /> : <Volume2 size={10} className="text-indigo-400" />}
+            </div>
+          )}
         </div>
 
         <div 

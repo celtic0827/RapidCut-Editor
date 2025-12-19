@@ -36,6 +36,7 @@ export interface TimelineItem {
   effect?: TitleEffect;
   color: string;
   volume?: number;
+  muted?: boolean; // 新增：個別片段靜音
   fx?: ClipFX;
 }
 

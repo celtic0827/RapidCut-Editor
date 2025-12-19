@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat, Zap } from 'lucide-react';
+import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, LayoutGrid, Play, Pause, SkipBack, SkipForward, Repeat, Zap, Volume2, VolumeX } from 'lucide-react';
 import { TimelineItem, TrackType } from './types.ts';
 import { 
   LANE_HEIGHT_TEXT, 
@@ -18,8 +19,8 @@ interface TimelineProps {
   activeDraggingId: string | null;
   isMagnetEnabled: boolean;
   setIsMagnetEnabled: (val: boolean) => void;
-  isMagneticMode?: boolean; // 修改
-  setIsMagneticMode?: (val: boolean) => void; // 修改
+  isMagneticMode?: boolean;
+  setIsMagneticMode?: (val: boolean) => void;
   projectDuration: number;
   totalTimelineDuration: number;
   onAddItem: (type: TrackType) => void;
@@ -41,6 +42,8 @@ interface TimelineProps {
   draggingAsset: {name: string, url: string, duration: number, type: TrackType} | null;
   dragOverTime: number | null;
   onDragUpdate: (t: number) => void;
+  v1Muted: boolean; // 新增
+  onToggleV1Mute: () => void; // 新增
 }
 
 export const Timeline = ({
@@ -49,7 +52,8 @@ export const Timeline = ({
   projectDuration, totalTimelineDuration, onAddItem, onSplit, onAutoArrange,
   isPlaying, setIsPlaying, onJumpToStart, onJumpToEnd, isLooping, setIsLooping,
   onMouseDown, onStartDrag, renderRuler, playheadRef, timelineRef,
-  onDropFromLibrary, onDropExternalFiles, draggingAsset, dragOverTime, onDragUpdate
+  onDropFromLibrary, onDropExternalFiles, draggingAsset, dragOverTime, onDragUpdate,
+  v1Muted, onToggleV1Mute
 }: TimelineProps) => {
 
   const handleDrop = (e: React.DragEvent) => {
@@ -83,7 +87,7 @@ export const Timeline = ({
 
   const trackLabels = [
     { label: 'T1', height: LANE_HEIGHT_TEXT },
-    { label: 'V1', height: LANE_HEIGHT_VIDEO },
+    { label: 'V1', height: LANE_HEIGHT_VIDEO, hasMute: true },
     { label: 'A1', height: LANE_HEIGHT_AUDIO }
   ];
 
@@ -106,7 +110,6 @@ export const Timeline = ({
               <Scissors size={11} /><span className="text-[9px] font-black uppercase tracking-tighter">Split</span>
             </button>
             
-            {/* 新增：手動自動排序按鈕 */}
             <button 
               onClick={handleAction(onAutoArrange)} 
               className="px-3 py-1 flex items-center gap-1.5 text-zinc-500 hover:text-zinc-200 hover:bg-white/5 transition-all border-r border-white/5" 
@@ -115,7 +118,6 @@ export const Timeline = ({
               <LayoutGrid size={11} /><span className="text-[9px] font-black uppercase tracking-tighter">Arrange</span>
             </button>
 
-            {/* 修改：磁吸模式切換按鈕 */}
             <button 
               onClick={handleAction(() => setIsMagneticMode && setIsMagneticMode(!isMagneticMode))} 
               className={`px-3 py-1 flex items-center gap-1.5 transition-all border-r border-white/5 ${isMagneticMode ? 'text-violet-400 bg-violet-500/10' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
@@ -155,7 +157,14 @@ export const Timeline = ({
         <div className="w-10 border-r border-black flex flex-col bg-[#1a1a1e] shrink-0 z-40">
            <div style={{ height: `${RULER_HEIGHT}px` }} className="border-b border-black/50 bg-[#151518] shrink-0" />
            {trackLabels.map(t => (
-             <div key={t.label} style={{ height: `${t.height}px` }} className={`flex items-center justify-center text-[9px] font-black border-b border-black/50 shrink-0 ${t.label === 'V1' ? 'text-indigo-400 bg-indigo-500/5' : 'text-zinc-700'}`}>{t.label}</div>
+             <div key={t.label} style={{ height: `${t.height}px` }} className={`flex flex-col items-center justify-center border-b border-black/50 shrink-0 ${t.label === 'V1' ? 'bg-indigo-500/5' : ''}`}>
+               <span className={`text-[9px] font-black ${t.label === 'V1' ? 'text-indigo-400' : 'text-zinc-700'}`}>{t.label}</span>
+               {t.hasMute && (
+                 <button onClick={onToggleV1Mute} className={`mt-0.5 transition-colors ${v1Muted ? 'text-red-500' : 'text-zinc-600 hover:text-indigo-400'}`}>
+                   {v1Muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
+                 </button>
+               )}
+             </div>
            ))}
         </div>
 
@@ -181,7 +190,7 @@ export const Timeline = ({
               ))}
               {draggingAsset && dragOverTime !== null && (
                 <div className="absolute opacity-40 pointer-events-none z-50 animate-pulse" style={{ left: 0, top: 0, width: '100%', height: '100%' }}>
-                  <TimelineClip item={{ id: 'ghost', type: draggingAsset.type, startTime: dragOverTime, duration: draggingAsset.duration, trimStart: 0, originalDuration: draggingAsset.duration, name: draggingAsset.name, url: draggingAsset.url, color: 'bg-indigo-500' }} isSelected={false} pxPerSec={pxPerSec} onSelect={() => {}} onDragStart={() => {}} onTrimStart={() => {}} />
+                  <TimelineClip item={{ id: 'ghost', type: draggingAsset.type, startTime: dragOverTime, duration: draggingAsset.duration, trimStart: 0, originalDuration: draggingAsset.duration, name: draggingAsset.name, url: draggingAsset.url, color: 'bg-indigo-500', muted: false, volume: 1.0 }} isSelected={false} pxPerSec={pxPerSec} onSelect={() => {}} onDragStart={() => {}} onTrimStart={() => {}} />
                 </div>
               )}
             </div>

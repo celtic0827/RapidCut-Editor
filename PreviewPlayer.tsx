@@ -4,6 +4,7 @@ import { TimelineItem, ProjectSettings } from './types';
 
 interface PreviewPlayerProps {
   videoRef: React.RefObject<HTMLVideoElement>;
+  audioRef: React.RefObject<HTMLAudioElement>;
   items: TimelineItem[];
   currentTime: number;
   projectDuration: number;
@@ -21,7 +22,7 @@ const formatTime = (t: number) => {
 };
 
 export const PreviewPlayer = ({ 
-  videoRef, items, currentTime, projectDuration, projectSettings, activeClip, isPlaying, isTrimming
+  videoRef, audioRef, items, currentTime, projectDuration, projectSettings, activeClip, isPlaying, isTrimming
 }: PreviewPlayerProps) => {
   const fx = activeClip?.fx;
   const isShakeActive = fx?.shakeEnabled && isPlaying;
@@ -45,7 +46,10 @@ export const PreviewPlayer = ({
             transform: `scale(${fx?.shakeEnabled ? fx.shakeZoom : 1})`
           } as any}
         >
-          <video ref={videoRef} className="w-full h-full object-contain pointer-events-none" playsInline muted />
+          {/* 移除 muted 以啟用影片音訊 */}
+          <video ref={videoRef} className="w-full h-full object-contain pointer-events-none" playsInline />
+          {/* 隱藏的音訊元件用於播放 A1 軌道 */}
+          <audio ref={audioRef} hidden />
         </div>
 
         {/* Dynamic Titles */}
