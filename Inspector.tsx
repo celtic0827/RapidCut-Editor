@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
-import { Trash2, Monitor, Waves, Zap, Hash, Scaling, Save, Wand2, RefreshCw, Volume2, VolumeX } from 'lucide-react';
-import { TimelineItem, ClipFX } from './types';
+import { Trash2, Monitor, Waves, Zap, Hash, Scaling, Save, Wand2, RefreshCw, Volume2, VolumeX, Sparkles } from 'lucide-react';
+import { TimelineItem, ClipFX, TransitionType } from './types';
 
 interface InspectorProps {
   activeItem: TimelineItem | undefined;
@@ -41,6 +41,25 @@ export const Inspector = ({ activeItem, onUpdateItem, onDeleteItem, onSavePreset
                   className="w-full bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] text-zinc-100 focus:outline-none focus:border-indigo-500" 
                 />
               </div>
+
+              {activeItem.type === 'video' && (
+                <div className="pt-2 pb-2 border-b border-zinc-900 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[8px] text-zinc-600 uppercase font-black flex items-center gap-1.5">
+                      <Sparkles size={10} className="text-amber-500" /> Transition In
+                    </label>
+                    <select 
+                      value={activeItem.transition || 'none'} 
+                      onChange={e => onUpdateItem(activeItem.id, { transition: e.target.value as TransitionType })}
+                      className="bg-black/40 border border-zinc-800 rounded px-1 py-0.5 text-[9px] text-zinc-300 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="none">None</option>
+                      <option value="blur">Blur Dissolve</option>
+                    </select>
+                  </div>
+                  <p className="text-[7px] text-zinc-500 uppercase font-bold leading-tight">Apply cross-blur when switching from the previous clip.</p>
+                </div>
+              )}
 
               {(activeItem.type === 'video' || activeItem.type === 'audio') && (
                 <div className="pt-2 space-y-3">

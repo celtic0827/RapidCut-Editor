@@ -1,6 +1,7 @@
 
 export type TrackType = 'video' | 'audio' | 'text';
 export type TitleEffect = 'none' | 'reveal' | 'glitch' | 'typewriter';
+export type TransitionType = 'none' | 'blur';
 
 export interface ProjectSettings {
   width: number;
@@ -29,6 +30,7 @@ export interface TimelineItem {
   url?: string;
   content?: string;
   effect?: TitleEffect;
+  transition?: TransitionType; // 新增轉場類型
   color: string;
   volume?: number;
   muted?: boolean;
@@ -57,7 +59,7 @@ export interface ProjectMetadata {
   id: string;
   name: string;
   lastModified: number;
-  thumbnail?: string; // 新增專案縮圖 (Base64)
+  thumbnail?: string; 
 }
 
 export interface FXPreset {
